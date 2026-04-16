@@ -71,8 +71,8 @@ export interface AreaAnchor {
 
 export type AnnotationAnchor = PointAnchor | AreaAnchor;
 
-export type AnchorPlugType = 'Disc' | 'Crosshair' | 'Diamond' | 'Square' | 'None';
-export type LabelPlugType = 'Arrow1' | 'Arrow2' | 'Arrow3' | 'Dot' | 'None';
+export type AnchorPlugType = 'Arrow1' | 'Arrow2' | 'Arrow3' | 'Dot' | 'None';
+export type LabelPlugType = 'Disc' | 'Crosshair' | 'Diamond' | 'Square' | 'None';
 
 export interface PlugConfig {
     Shape: AnchorPlugType | LabelPlugType;
@@ -117,3 +117,19 @@ export interface LeaderStyleDefinition {
         Gap?: number;
     };
 }
+
+
+export interface Annotation {
+    Id: string;
+    Anchor: AnnotationAnchor;
+    Content: AnnotationContent;
+    StyleId: string;
+    Visible?: boolean;
+    LabelOffset?: Vector2d;
+    Group?: string;
+    Locked?: boolean;
+}
+
+export type LabelSector =
+    | 'TopLeft' | 'Top' | 'TopRight' | 'Right'
+    | 'BottomRight' | 'Bottom' | 'BottomLeft' | 'Left';
