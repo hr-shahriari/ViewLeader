@@ -1,29 +1,19 @@
 {
   "name": "viewleader",
-  "version": "1.0.0",
-  "description": "CAD-Style annotation system for three.js",
-  "main": "index.js",
-  "type": "commonjs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/viewleader.js",
+  "module": "./dist/viewleader.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/viewleader.js" }
+  },
+  "files": ["dist"],
   "scripts": {
-    "build": "vite build",
-    "test": "vitest run"
+    "dev": "vite build --watch",
+    "build": "tsc --emitDeclarationOnly && vite build"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hr-shahriari/ViewLeader.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/hr-shahriari/ViewLeader/issues"
-  },
-  "homepage": "https://github.com/hr-shahriari/ViewLeader#readme",
-  "devDependencies": {
-    "jsdom": "^29.0.2",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.8",
-    "vite-plugin-dts": "^4.5.4",
-    "vitest": "^4.1.4"
-  }
+  "peerDependencies": { "three": ">=0.160.0" },
+  "devDependencies": { "@types/three": "^0.170.0", "typescript": "^5.7.0", "vite": "^6.0.0" }
 }
