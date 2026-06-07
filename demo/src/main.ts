@@ -40,10 +40,17 @@ const manager = new AnnotationManager({
 })
 
 manager.addAnnotation({
-  anchor: { type: 'point', position: { x: 0, y: 5, z: 0 } },
-  content: { type: 'mtext', text: 'Hello' },
+  anchor: { type: 'point', position: { x: -1, y: 9.3, z: 0 } },
+  content: { type: 'mtext', text: 'Roof Slab' },
 });
-
+manager.addAnnotation({
+  anchor: { type: 'point', position: { x: -3.05, y: 5, z: 0 } },
+  content: { type: 'mtext', text: 'Curtain Wall' },
+});
+manager.addAnnotation({
+  anchor: { type: 'point', position: { x: 4, y: 5.2, z: 0 } },
+  content: { type: 'mtext', text: 'Wing B' },
+});
 function animate()
 {
     requestAnimationFrame(animate);
