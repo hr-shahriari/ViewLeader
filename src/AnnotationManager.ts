@@ -1,9 +1,12 @@
 import * as THREE from 'three'
-import type { Annotation, MtextContent, PointAnchor } from './types'
+import type { Annotation, MtextContent, PointAnchor, Vector2d } from './types'
 import { Projection } from './core/Projection';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-
+const padding = 6
+const borderRad = 2
+const backColor = '#1a1e2e'
+const backOpacity = '0.82'
 
 export interface AnnotationManagerConfig
 {
@@ -55,7 +58,8 @@ export class AnnotationManager
     {
     this.svg.innerHTML = '';
     for (const ann of this.annotations.values()) {
-        if (!ann.visible) continue;
+        if (!ann.visible) continue
+
         const anchor = this.projector.toScreen(ann.anchor.position)
         if (!anchor) continue;
         const offset = ann.offset ?? {x:40, y:-30}
@@ -63,6 +67,29 @@ export class AnnotationManager
 
         const group = document.createElementNS(SVG_NS, 'g')
         group.dataset.annotationId = ann.id
+
+
+        const text = document.createElementNS(SVG_NS,'text')
+        text.setAttribute('x', String(label.x + padding))
+        text.setAttribute('y',String(label.y + padding))
+              text.setAttribute('fill', '#e8eaf0');
+      text.setAttribute('font-family', 'Inter, sans-serif');
+      text.setAttribute('font-size', '12');
+      text.setAttribute('dominant-baseline', 'hanging');
+      text.textContent = ann.content.text;
+      this.svg.appendChild(text)
+
+      const bbox = text.getBBox()
+      this.svg.removeChild(text)
+
+      const recX = label.x
+      const recY = label.y
+      const recW = bbox.width + padding* 2
+      const recH = bbox.height + padding*2
+
+      
+
+
 
         const line = document.createElementNS(SVG_NS, 'line')
         line.setAttribute('x1', String(anchor.x))
@@ -73,15 +100,6 @@ export class AnnotationManager
         line.setAttribute('stroke-width','1.2')
         group.appendChild(line)
 
-        const text = document.createElementNS(SVG_NS, 'text')
-        text.setAttribute('x', String(label.x));
-        text.setAttribute('y', String(label.y));
-        text.setAttribute('fill', '#e8eaf0');
-        text.setAttribute('font-family', 'Inter, sans-serif');
-        text.setAttribute('font-size', '12');
-        text.textContent = ann.content.text;
-
-        group.appendChild(text)
 
         this.svg.appendChild(group)    
 
