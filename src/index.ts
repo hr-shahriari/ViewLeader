@@ -1,22 +1,11 @@
+export {AnnotationManager} from './AnnotationManager'
+export type {AnnotationManagerConfig} from './AnnotationManager'
 export type {
     Vector2d,
     Vector3d,
-    AnnotationContent,
-    TextContent,
-    ShapeContent,
-    CenteredContent,
-    UnderlinedContent,
-    HtmlContent,
+    MtextContent,
     PointAnchor,
-    AreaAnchor,
-    AnnotationAnchor,
-    AnchorPlugType,
-    LabelPlugType,
-    PlugConfig,
-    RoutingMode,
-    LeaderStyleDefinition,
-    Annotation,
-    LabelSector,
-} from './types.js';
+    Annotation
+} from './types';
 
 export const VERSION = '0.1.0';
