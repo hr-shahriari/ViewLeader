@@ -1,6 +1,9 @@
 import * as THREE from 'three'
-import type { Annotation, MtextContent, PointAnchor, Vector2d } from './types'
+import type { Annotation, MtextContent, PointAnchor, Vector2d, Vector3d } from './types'
 import { Projection } from './core/Projection';
+import { makeAnchorEnd, makeLabelEnd } from './styles/EndShapes';
+import { AnchorSelector } from './interaction/AnchorSelector';
+import { DragHandler } from './interaction/DragHandler';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const padding = 6
@@ -9,15 +12,18 @@ const backColor = '#1a1e2e'
 const backOpacity = '0.82'
 
 export interface AnnotationManagerConfig {
-    scene: THREE.Scene;
-    camera: THREE.Camera;
+    scene: THREE.Scene
+    camera: THREE.Camera
     renderer: THREE.WebGLRenderer
+    bObjects: THREE.Object3D[]
 }
 
 export class AnnotationManager {
     private svg: SVGSVGElement;
     private annotations = new Map<string, Annotation>()
     private projector: Projection
+    private selector: AnchorSelector
+    private drag: DragHandler
     private requestId = 0
 
     constructor(cfg: AnnotationManagerConfig) {
@@ -25,31 +31,65 @@ export class AnnotationManager {
         this.svg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none;'
         cfg.renderer.domElement.parentElement!.appendChild(this.svg)
         this.projector = new Projection(cfg.camera, cfg.renderer)
+        this.selector = new AnchorSelector(cfg.camera, cfg.renderer.domElement,cfg.bObjects)
+
+        this.drag = new DragHandler(
+            (id) => this.annotations.get(id),
+            (id) => 
+            {
+                const a = this.annotations.get(id)
+                return a ? this.projector.toScreen(a.anchor.position) : null
+            },
+            (id, offset) => {
+                const a = this.annotations.get(id)
+                if (a) this.annotations.set(id, {...a, offset})
+            }
+        )
+
         this.start()
+        
     }
 
-    addAnnotation(data: { anchor: PointAnchor, content: MtextContent, styleId?: string }): Annotation {
+    addAnnotation(data: { anchor: PointAnchor, content: MtextContent, styleId?: string, offset?: Vector2d}): Annotation {
         const ann: Annotation = {
             id: crypto.randomUUID(),
             anchor: data.anchor,
             content: data.content,
             styleId: data.styleId ?? 'standard',
-            visible: true
+            visible: true,
+            offset: data.offset
         }
         this.annotations.set(ann.id, ann)
         return ann
     }
 
-    private start(): void {
-        if (this.requestId) return;
-        const frame = () => {
-            this.render();
-            this.requestId = requestAnimationFrame(frame)
-        }
-        frame();
+    pickAnchor(event: {cx: number, cy: number}):Vector3d | null
+    {
+        const point = this.selector.select(event)
+        if (!point) return null
+        this.addAnnotation(
+            {
+                anchor:{type: 'point', position: point},
+                content: {type: 'mtext', text:'Picked'}
+            }
+        )
+
+        return point
+
     }
 
-    private render(): void {
+    private start(): void
+    {
+        if (this.requestId) return
+        const frame=() => 
+        {
+            this.render()
+            this.requestId = requestAnimationFrame(frame)
+        }
+        frame()
+    }
+    
+    render(): void {
         this.svg.innerHTML = '';
         for (const ann of this.annotations.values()) {
             if (!ann.visible) continue
@@ -61,6 +101,8 @@ export class AnnotationManager {
 
             const group = document.createElementNS(SVG_NS, 'g')
             group.dataset.annotationId = ann.id
+
+            if (!ann.locked) group.style.pointerEvents = 'auto'
 
 
             const text = document.createElementNS(SVG_NS, 'text')
@@ -96,7 +138,7 @@ export class AnnotationManager {
             group.appendChild(text)
 
 
-            const lx2 = offset.x >= 0 ? recX: recH + recW
+            const lx2 = offset.x >= 0 ? recX : recH + recW
             const ly2 = recY + recH / 2
 
 
@@ -109,8 +151,16 @@ export class AnnotationManager {
             line.setAttribute('stroke-width', '1.2')
             group.appendChild(line)
 
+            const dir = offset.x >= 0 ? 1 : -1;
+            const anchorEnd = makeAnchorEnd(anchor, dir, 'arrow')
+            if (anchorEnd) group.appendChild(anchorEnd)
+
+            const labelPlug = makeLabelEnd({ x: lx2, y: ly2 }, 'disc');
+            if (labelPlug) group.appendChild(labelPlug);
+
 
             this.svg.appendChild(group)
+            this.drag.attach(group, ann.id)
 
         }
     }

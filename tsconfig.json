@@ -41,6 +41,7 @@
     "declaration": true,
     "declarationDir": "./dist",
     "outDir": "./dist",
+    "rootDir": "./src",
     "skipLibCheck": true
   },
   "include": ["src"]

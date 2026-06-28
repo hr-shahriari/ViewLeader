@@ -6,7 +6,11 @@
     "strict": true,
     "esModuleInterop": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "viewleader": ["../src/index.ts"]
+    },
+
   },
   "include": ["src"]
 }
