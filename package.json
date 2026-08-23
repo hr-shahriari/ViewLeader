@@ -1,19 +1,83 @@
 {
   "name": "viewleader",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.0.1-beta.0",
+  "description": "Engine-neutral SVG annotation and leader-line overlay for 3D model viewers",
+  "license": "Apache-2.0",
   "type": "module",
-  "main": "./dist/viewleader.js",
-  "module": "./dist/viewleader.js",
-  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/viewleader.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./three": {
+      "types": "./dist/three.d.ts",
+      "import": "./dist/three.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    },
+    "./vue": {
+      "types": "./dist/vue.d.ts",
+      "import": "./dist/vue.js"
+    },
+    "./markdown": {
+      "types": "./dist/markdown.d.ts",
+      "import": "./dist/markdown.js"
+    },
+    "./package.json": "./package.json"
   },
-  "files": ["dist"],
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "three": ">=0.160.0",
+    "vue": ">=3.3.0"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true },
+    "three": { "optional": true },
+    "vue": { "optional": true }
+  },
+  "workspaces": [
+    "demo"
+  ],
   "scripts": {
-    "dev": "vite build --watch",
-    "build": "tsc --emitDeclarationOnly && vite build"
+    "build": "tsup",
+    "build:demo": "npm run build --workspace=viewleader-demo",
+    "dev:demo": "npm run dev --workspace=viewleader-demo",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "typecheck": "tsc --noEmit && tsc -p demo --noEmit",
+    "perf:browser": "npm run build && npm run build:demo && node scripts/run-browser-performance.mjs",
+    "perf:gate": "node scripts/performance-gate.mjs",
+    "check": "npm run typecheck && npm run build && npm test && npm run build:demo && npm run test:e2e",
+    "prepublishOnly": "npm run build"
   },
-  "peerDependencies": { "three": ">=0.160.0" },
-  "devDependencies": { "@types/three": "^0.170.0", "typescript": "^5.7.0", "vite": "^6.0.0" }
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.178.0",
+    "jsdom": "^26.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.2.7",
+    "three": "^0.178.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4",
+    "vue": "^3.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.12.1"
 }
