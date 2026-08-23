@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hello world · ViewLeader examples</title>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>Hello world</strong></div>
+      <details class="page-notes" open>
+        <summary>About this example</summary>
+        <div class="page-notes-body">
+          <p><b>The question:</b> what is the least code that puts a leader on a Three.js model?</p>
+          <p><b>Try:</b> left-drag to orbit, wheel to zoom. The note re-projects every frame, and rails outside the building’s projected outline instead of landing on top of it, because the adapter was given <code>modelBounds</code>. Nothing here is editable — that starts on <b>Direct editing</b>.</p>
+          <p><b>API:</b> <code>new ViewLeader({ boundary, adapters })</code> · <code>createThreeAdapter({ camera, renderer, modelBounds })</code> · <code>annotations.create()</code> · <code>leader.update()</code></p>
+        </div>
+      </details>
+      <a href="/src/pages/hello-world.ts.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/hello-world.ts"></script>
+  </body>
+</html>

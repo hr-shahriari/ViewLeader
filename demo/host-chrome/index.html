@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host chrome · ViewLeader examples</title>
+    <style>
+      /* The chrome is the host's, so its styling lives with the host page rather than in the
+         shared example stylesheet. Both widgets are positioned inside #viewport, whose pixel
+         coordinates are the ones `geometry.of` reports. */
+      .host-menu {
+        position: absolute;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        min-width: 176px;
+        padding: 5px;
+        border: 1px solid #b9b5aa;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 12px 32px rgb(35 38 45 / 18%);
+      }
+      .host-menu button {
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        padding: 7px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: #1a1d24;
+        cursor: pointer;
+      }
+      .host-menu button:hover { background: #eceae3; }
+
+      .host-text-field {
+        position: absolute;
+        z-index: 20;
+        margin: 0;
+        border: 1px solid #4b6ef5;
+        border-radius: 2px;
+        outline: 2px solid rgb(75 110 245 / 25%);
+        background: #fff;
+        resize: none;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>Host chrome</strong></div>
+      <details class="page-notes" open>
+        <summary>About this example</summary>
+        <div class="page-notes-body">
+          <p><b>The question:</b> the four widgets core refuses to own — a context menu, a grip menu, key bindings and an inline text field — how does a host build them on the public surface?</p>
+          <ul>
+            <li><b>Click</b> a label to select it. <b>Shift-, ⌘- or Ctrl-click</b> toggles another one in or out of the selection.</li>
+            <li><b>Right-click</b> a label for the host menu: edit text, reset placement, reset routing, delete.</li>
+            <li><b>Right-click a grip</b> for the grip menu — a midpoint grip adds a bend, the vertex it becomes removes it. Grips are drawn, and hit-tested, only on a <b>selected</b> annotation, so select it first (or press ⌘/Ctrl+A).</li>
+            <li><b>Double-click</b> a label to edit its text in place: Enter commits, Shift+Enter is a newline, Escape cancels.</li>
+            <li><b>Keys:</b> arrows nudge 1 px and <b>Shift+arrow 10 px</b>, Delete removes the selection as one undo step, ⌘/Ctrl+A selects all, Escape clears. Undo and Redo are buttons here.</li>
+            <li>This page asks core for no gestures, so nothing drags: the grips are right-click targets only. Dragging them is <b>Direct editing</b>.</li>
+            <li><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</li>
+          </ul>
+          <p><b>API:</b> <code>editing.hitTestScreen(point)</code> · <code>geometry.of(id)</code> (<code>label</code>, <code>text</code>, <code>routeHandles</code>) · <code>annotations.move/update/remove/select/clearSelection</code> · <code>resetPlacement/resetRouting</code> · <code>annotations.rerouteLeg(id, legId, routing)</code> · <code>definitions.get(styleId)</code> · <code>history.transaction/undo/redo</code> · <code>leader.setViewportInsets({ bottom })</code></p>
+        </div>
+      </details>
+      <a href="/src/pages/host-chrome.ts.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/host-chrome.ts"></script>
+  </body>
+</html>

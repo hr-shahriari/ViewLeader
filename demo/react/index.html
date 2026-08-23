@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React workflow · ViewLeader examples</title>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>React workflow</strong></div>
+      <details class="page-notes" open>
+        <summary>About this example</summary>
+        <div class="page-notes-body">
+          <p><b>The question:</b> who owns the ViewLeader instance in a React app, and what happens when the boundary unmounts?</p>
+          <p><b>Try:</b> <b>Replace boundary</b> bumps the key on the mounted component. React unmounts the old boundary — disposing its ViewLeader with it — and mounts a fresh element, which the hook constructs on and the effect seeds again; the note’s title counts up (React #2, #3…). Nothing is constructed at module load or on the server.</p>
+          <p><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</p>
+          <p><b>API:</b> <code>useViewLeader({ adapters })</code> → <code>{ boundaryRef, viewLeader }</code> · <code>annotations.create()</code> · <code>leader.update()</code></p>
+        </div>
+      </details>
+      <a href="/src/pages/react.tsx.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/react.tsx"></script>
+  </body>
+</html>

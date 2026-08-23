@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Saved views & tours · ViewLeader examples</title>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>Saved views & tours</strong></div>
+      <details class="page-notes" open>
+        <summary>About this example</summary>
+        <div class="page-notes-body">
+          <p><b>The question:</b> how do you save a camera framing, and play a tour of them, without editing the annotation document?</p>
+          <p><b>Try:</b> orbit anywhere, then <b>Overview</b> or <b>Corner</b> to restore a framing — the real Three.js camera moves, because the host’s <code>viewerState</code> adapter is what writes it. <b>Play tour</b> runs both steps, 700 ms of transition and 400 ms of dwell each. Activation is transactional: the adapter’s <code>rollback</code> puts the camera back if applying fails.</p>
+          <p>Restore <b>Corner</b> and the leader draws dashed and dimmed: that framing sits low enough to put the front wall between the camera and the roof slab this note anchors (ISO 128: dashed means hidden). Orbit back up and it goes solid again.</p>
+          <p><b>API:</b> <code>views.save({ id, name })</code> · <code>views.activate(id)</code> · <code>views.createTour({ steps })</code> · <code>views.playTour(id)</code> · <code>adapters.viewerState</code> (<code>capture</code> / <code>prepare</code> / <code>apply</code> / <code>rollback</code>)</p>
+        </div>
+      </details>
+      <a href="/src/pages/saved-views.ts.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/saved-views.ts"></script>
+  </body>
+</html>

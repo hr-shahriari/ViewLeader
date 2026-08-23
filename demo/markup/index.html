@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markup & multi-leaders · ViewLeader examples</title>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>Markup & multi-leaders</strong></div>
+      <details class="page-notes" open>
+        <summary>About this example</summary>
+        <div class="page-notes-body">
+          <p><b>The question:</b> how do you draw a region on the model, and point one label at several things at once?</p>
+          <p><b>Try:</b> the revision cloud on the front wall and the three-leg “Openings” callout are both committed at load, through the same public markup API a pointer tool would drive — the geometry is handed in, so no gesture is needed. Orbit: the cloud stays on the wall’s plane and the three legs re-route to keep one label readable. <b>Undo last leg</b> unwinds one markup edit per press.</p>
+          <p><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</p>
+          <p><b>API:</b> <code>authoring.markup.start({ kind, plane, draft })</code> · <code>setRegionGeometry(geometry, 'keyboard')</code> · <code>markup.complete()</code> · <code>markup.addAnchor(id, leg)</code> · <code>history.undo()</code></p>
+        </div>
+      </details>
+      <a href="/src/pages/markup.ts.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/markup.ts"></script>
+  </body>
+</html>

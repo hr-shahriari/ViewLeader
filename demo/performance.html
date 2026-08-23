@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ViewLeader browser performance harness</title>
+    <style>
+      html, body, #performance-boundary { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      #performance-boundary { position: relative; }
+    </style>
+  </head>
+  <body>
+    <main id="performance-boundary" aria-label="Performance fixture"></main>
+    <output id="performance-status" role="status">loading</output>
+    <script type="module" src="/src/performance.ts"></script>
+  </body>
+</html>

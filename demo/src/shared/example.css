@@ -1,0 +1,186 @@
+:root {
+  color: #1a1d24;
+  background: #f4f2ec;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; }
+body { overflow: hidden; }
+a { color: inherit; }
+
+/* --- Example page chrome --- */
+.example-header {
+  position: fixed;
+  z-index: 10;
+  inset: 0 0 auto 0;
+  height: 58px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgb(26 29 36 / 14%);
+  background: rgb(244 242 236 / 94%);
+  backdrop-filter: blur(12px);
+}
+
+.example-header div { display: flex; align-items: center; gap: 20px; }
+.example-header a { font-size: 13px; text-underline-offset: 3px; }
+.example-header strong { font-size: 14px; letter-spacing: .01em; }
+
+#viewport {
+  position: absolute;
+  inset: 58px 0 0;
+  overflow: hidden;
+  background: #e9e7df;
+}
+
+#viewport canvas { display: block; width: 100%; height: 100%; }
+
+/* The ViewLeader SVG overlay lives here, aligned to the canvas rect. */
+.vl-boundary {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.vl-boundary svg { width: 100%; height: 100%; overflow: visible; }
+
+/* --- Per-example notes --- */
+/* The gallery is this library's only reference, so every shell carries the same short block: the
+   question the page answers, what to try, and the API it calls. It hangs off the header rather than
+   sitting in the viewport, so the closed state adds nothing over the drawing at all.
+
+   The open panel is `pointer-events: none` end to end. It is prose floating over the model, and a
+   card that ate a click meant for a label would be the `.control-dock` bug a second time. The
+   summary is the one interactive part — and the way out when the panel covers what you came to see. */
+.page-notes > summary {
+  pointer-events: auto;
+  padding: 5px 11px;
+  border: 1px solid #cdc9be;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #3a3f49;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.page-notes > summary:hover { background: #fff; }
+/* Absolute against `.example-header`, which is fixed: the panel hangs below the 58 px band without
+   being part of it, so an open panel never changes the header's height or moves `#viewport`.
+   Selector carries the header too — `.example-header div` would otherwise win on specificity and
+   lay the panel out as a flex row. */
+.example-header .page-notes-body {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 20px;
+  display: block;
+  width: min(370px, calc(100vw - 40px));
+  max-height: calc(100vh - 88px);
+  overflow: hidden;
+  pointer-events: none;
+  padding: 14px 16px;
+  border: 1px solid rgb(26 29 36 / 14%);
+  border-radius: 12px;
+  background: rgb(244 242 236 / 94%);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgb(35 38 45 / 12%);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #3a3f49;
+}
+.page-notes-body p { margin: 0 0 9px; }
+.page-notes-body ul { margin: 0 0 9px; padding-left: 15px; }
+.page-notes-body li { margin: 0 0 5px; }
+.page-notes-body > :last-child { margin-bottom: 0; }
+.page-notes-body b { color: #1a1d24; font-weight: 600; }
+.page-notes-body code { font-family: ui-monospace, monospace; font-size: 11.5px; color: #1a1d24; }
+
+/* --- Interactive control panel --- */
+/* Status above bar in one column, so a bar that wraps to two rows pushes the status up rather than
+   being covered by it. A fixed offset on the status cannot know how many rows the bar took. */
+/* The dock itself is transparent to the pointer. It is a shrink-to-fit fixed box whose max-content
+   width is every control on one line, so on a page with a dozen controls its rectangle covers most
+   of the bottom of the viewport — and every pixel of it that is not a button would otherwise eat a
+   click meant for the model. Only the controls themselves take input. */
+.control-dock {
+  position: fixed;
+  z-index: 10;
+  left: 20px;
+  bottom: 20px;
+  max-width: calc(100% - 40px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  pointer-events: none;
+}
+.control-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+/* Re-enabled on the controls, not on the bar: a wrapped bar's rows still span the dock's width, so
+   the 8px gaps between buttons would keep swallowing clicks. */
+.control-bar button, .control-bar select {
+  pointer-events: auto;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid #b9b5aa;
+  border-radius: 8px;
+  background: #fff;
+  color: #1a1d24;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgb(35 38 45 / 10%);
+}
+.control-bar button:disabled { opacity: .5; cursor: default; }
+/* A select's visible caption. `pointer-events: auto` for the same reason the controls have it — the
+   dock is transparent, and a caption that cannot be clicked cannot focus the box it names. */
+.control-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+  font-size: 12px;
+  color: #3a3f49;
+  white-space: nowrap;
+}
+/* Dim the pair, not the box: a bright caption beside a greyed-out select reads as a rendering bug
+   rather than as a control the current selection cannot satisfy. */
+.control-select:has(select:disabled) { opacity: .5; }
+.control-select:has(select:disabled) select { cursor: default; }
+.control-status {
+  /* Read-only text: never let it take a click meant for the bar below it. */
+  pointer-events: none;
+  max-width: min(560px, 100%);
+  font-size: 13px;
+  color: #3a3f49;
+}
+.control-status:empty { display: none; }
+
+/* Framework example pages let their hook own the overlay div. */
+.framework-boundary { position: absolute; inset: 0; }
+.framework-boundary svg { width: 100%; height: 100%; overflow: visible; }
+
+/* --- Gallery index --- */
+.gallery-page { overflow: auto; background: #efede6; }
+.gallery-shell { width: min(980px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0 100px; }
+.eyebrow { margin: 0 0 14px; color: #5b6472; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.gallery-shell > h1 { max-width: 760px; margin: 0; font-size: clamp(36px, 6vw, 68px); line-height: .98; letter-spacing: -.055em; }
+.lede { max-width: 700px; margin: 26px 0 48px; color: #555c67; font-size: 18px; line-height: 1.55; }
+.gallery-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.gallery-list li { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.6fr) auto; align-items: center; gap: 24px; min-height: 92px; padding: 18px 22px; border: 1px solid #d8d5cc; border-radius: 14px; background: rgb(255 255 255 / 55%); color: #777b82; }
+.gallery-list li.available { color: #1a1d24; border-color: #b9b5aa; background: #fff; box-shadow: 0 12px 36px rgb(35 38 45 / 8%); }
+.gallery-list li > div { display: flex; align-items: baseline; gap: 14px; }
+.gallery-list li > div > span { color: #8a8f98; font-family: ui-monospace, monospace; font-size: 12px; }
+.gallery-list h2 { margin: 0; font-size: 18px; }
+.gallery-list p { margin: 0; font-size: 14px; line-height: 1.45; }
+.source-link, .coming { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.coming { color: #a2a4a7; }
+
+@media (max-width: 720px) {
+  .gallery-list li { grid-template-columns: 1fr auto; gap: 10px; }
+  .gallery-list li > p { grid-column: 1 / -1; }
+}
