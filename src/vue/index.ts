@@ -4,6 +4,7 @@ import {
   onScopeDispose,
   shallowRef,
   watch,
+  type ComponentPublicInstance,
   type ShallowRef,
 } from 'vue';
 import {
@@ -18,6 +19,13 @@ import {
   type MaybeVueSource,
   type SnapshotSource,
 } from './core.js';
+import { subscribeFrame } from '../internal/frame-seam.js';
+import {
+  FollowRegistry,
+  followTargetKey,
+  type FollowOptions,
+  type FollowTarget,
+} from '../internal/follow.js';
 
 export type VueViewLeaderOptions = Omit<ViewLeaderOptions, 'boundary'>;
 export type VueViewLeaderOptionsSource = MaybeVueSource<VueViewLeaderOptions>;
@@ -106,4 +114,120 @@ export function useViewLeaderSnapshot<Snapshot>(
   return snapshot as Readonly<ShallowRef<Snapshot | null>>;
 }
 
+/**
+ * Pins your own elements to annotations — the Vue counterpart of the React hook by the same name.
+ *
+ * The library writes each element's position after every frame, outside Vue's reactivity. Holds
+ * `null` until the `ViewLeader` exists, matching `useViewLeader`.
+ *
+ * Two ways in, because Vue has two idioms and both are legitimate here:
+ *
+ * ```vue
+ * <div :ref="follow.ref({ kind: 'label', id: 'note' })" />   <!-- callback, parity with React -->
+ * ```
+ * ```ts
+ * const toolbar = useTemplateRef('toolbar')
+ * follow.track({ kind: 'label', id: 'note' }, toolbar)       // Vue fills the ref, we read it
+ * ```
+ */
+export function useFollow(
+  viewLeaderSource: MaybeVueSource<ViewLeader | null | undefined>,
+): VueFollowBinding {
+  const registry = shallowRef<FollowRegistry | null>(null);
+  const stop = watch(
+    () => resolveVueSource(viewLeaderSource) ?? null,
+    (viewLeader, _previous, onCleanup) => {
+      if (viewLeader === null) {
+        registry.value = null;
+        return;
+      }
+      const instance = new FollowRegistry({
+        geometry: viewLeader.geometry,
+        subscribe: (listener) => subscribeFrame(viewLeader, listener),
+      });
+      registry.value = instance;
+      onCleanup(() => {
+        instance.dispose();
+        if (registry.value === instance) registry.value = null;
+      });
+    },
+    { immediate: true, flush: 'sync' },
+  );
+
+  onScopeDispose(() => {
+    stop();
+    registry.value?.dispose();
+    registry.value = null;
+  });
+
+  // Memoised here as well as inside the registry, because a template re-evaluates `follow.ref({…})`
+  // on every render and Vue fires a *function* ref on every update. A fresh identity each time would
+  // tear down and rebuild a registration that never changed — and these have to survive the registry
+  // itself being replaced when the ViewLeader changes.
+  const callbacks = new Map<string, (element: VueRefTarget) => void>();
+
+  return {
+    registry: registry as Readonly<ShallowRef<FollowRegistry | null>>,
+    ref: (target, options) => {
+      const key = followTargetKey(target);
+      const existing = callbacks.get(key);
+      if (existing !== undefined) return existing;
+      const callback = (element: VueRefTarget): void => {
+        registry.value?.ref(target, options)(elementOf(element));
+      };
+      callbacks.set(key, callback);
+      return callback;
+    },
+    track: (target, source, options) => {
+      const stopTracking = watch(
+        () => [registry.value, resolveVueSource(source) ?? null] as const,
+        ([current, element], _previous, onCleanup) => {
+          const node = elementOf(element);
+          if (current === null || node === null) return;
+          onCleanup(current.register(target, node, options));
+        },
+        { immediate: true, flush: 'sync' },
+      );
+      onScopeDispose(stopTracking);
+      return stopTracking;
+    },
+  };
+}
+
+export interface VueFollowBinding {
+  /** `null` until the `ViewLeader` exists. Present for hosts that want the registry itself. */
+  readonly registry: Readonly<ShallowRef<FollowRegistry | null>>;
+  /**
+   * A `:ref` callback, matching the React binding.
+   *
+   * Accepts what Vue actually passes: an element, or a component instance when the `:ref` sits on a
+   * component rather than a plain tag. The instance's root element is used in that case.
+   */
+  ref(target: FollowTarget, options?: FollowOptions): (element: VueRefTarget) => void;
+  /** Watches a template ref and registers whatever it holds. Returns a stop handle. */
+  track(
+    target: FollowTarget,
+    source: MaybeVueSource<VueRefTarget>,
+    options?: FollowOptions,
+  ): () => void;
+}
+
+/** What Vue hands a `:ref`: an element, a component instance, or nothing. */
+export type VueRefTarget = Element | ComponentPublicInstance | null | undefined;
+
+/** Unwraps a component instance to its root element, so both `:ref` shapes reach the registry. */
+function elementOf(target: VueRefTarget): Element | null {
+  if (target === null || target === undefined) return null;
+  if (target instanceof Element) return target;
+  const root = (target as ComponentPublicInstance).$el as unknown;
+  return root instanceof Element ? root : null;
+}
+
 export type { SnapshotSource } from './core.js';
+export {
+  FollowRegistry,
+  followTargetKey,
+  type FollowMissingBehaviour,
+  type FollowOptions,
+  type FollowTarget,
+} from '../internal/follow.js';

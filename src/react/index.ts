@@ -12,6 +12,8 @@ import {
   type ViewLeaderOptions,
 } from '../index.js';
 import { BoundaryLifecycle, type BoundaryOptions, type SnapshotSource } from './core.js';
+import { subscribeFrame } from '../internal/frame-seam.js';
+import { FollowRegistry } from '../internal/follow.js';
 
 export type ReactViewLeaderOptions = Omit<ViewLeaderOptions, 'boundary'>;
 export type BoundaryRefCallback = (element: HTMLElement | null) => void;
@@ -85,9 +87,63 @@ export function useViewLeaderSnapshot<Snapshot>(
   return useSyncExternalStore(subscribe, getSnapshot, nullSnapshot);
 }
 
+/**
+ * Pins your own elements to annotations — a toolbar beside a label, your own drag handles, an editor
+ * over the text.
+ *
+ * The library writes each element's position after every frame, outside React's render cycle. That
+ * is not an optimisation: `geometry.of()` is valid for exactly one frame and a camera move fires no
+ * DOM event, so positioning from render state would mean `setState` at 60 Hz and rendering from
+ * numbers that are already stale.
+ *
+ * One call per component serves any number of elements, which is what makes a variable number of
+ * handles expressible. Returns `null` until the `ViewLeader` exists, the same contract
+ * `useViewLeader` uses — render followed elements only once you have one.
+ *
+ * ```tsx
+ * const { boundaryRef, viewLeader } = useViewLeader(options);
+ * const follow = useFollow(viewLeader);
+ * return (
+ *   <div ref={boundaryRef}>
+ *     {follow && <div ref={follow.ref({ kind: 'label', id: 'note' })} className="toolbar" />}
+ *   </div>
+ * );
+ * ```
+ */
+export function useFollow(
+  viewLeader: ViewLeader | null | undefined,
+): FollowRegistry | null {
+  const [registry, setRegistry] = useState<FollowRegistry | null>(null);
+
+  useEffect(() => {
+    if (viewLeader === null || viewLeader === undefined) {
+      setRegistry(null);
+      return undefined;
+    }
+    const instance = new FollowRegistry({
+      geometry: viewLeader.geometry,
+      subscribe: (listener) => subscribeFrame(viewLeader, listener),
+    });
+    setRegistry(instance);
+    return () => {
+      instance.dispose();
+      setRegistry((current) => (current === instance ? null : current));
+    };
+  }, [viewLeader]);
+
+  return registry;
+}
+
 function noop(): void {}
 function nullSnapshot(): null {
   return null;
 }
 
 export type { SnapshotSource } from './core.js';
+export {
+  FollowRegistry,
+  followTargetKey,
+  type FollowMissingBehaviour,
+  type FollowOptions,
+  type FollowTarget,
+} from '../internal/follow.js';
