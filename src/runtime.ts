@@ -16,6 +16,9 @@ import {
 import {
   DEFAULT_LANDING,
   builtInDefinitions,
+  resolveStyleWithProvenance,
+  DEFAULT_STYLE_ID,
+  type ResolvedStyle,
   definitionsFromCollections,
   mergeStyleOverride,
   readStyleOverride,
@@ -149,6 +152,8 @@ import type {
   Vec3,
 } from './types.js';
 import type { SavedViewAnnotationOverrides } from './saved-views/neutral-types.js';
+import { revisionCache } from './internal/snapshot-cache.js';
+import { clearFrameSeam, emitFrame } from './internal/frame-seam.js';
 
 export interface AnnotationViewRuntimeState {
   readonly activeViewId?: string;
@@ -267,6 +272,10 @@ export class ViewLeaderRuntime {
   readonly #hasOcclusion: boolean;
   readonly #overlay: SvgOverlay;
   readonly #listeners = new Set<() => void>();
+  // Snapshot identity is part of the contract: see internal/snapshot-cache.ts.
+  readonly #annotationsCache = revisionCache<AnnotationsSnapshot>();
+  readonly #documentsCache = revisionCache<DocumentsSnapshot>();
+  readonly #historyCache = revisionCache<HistorySnapshot>();
   readonly #diagnosticListeners = new Set<(diagnostic: Diagnostic) => void>();
   readonly #diagnostics: Diagnostic[] = [];
   readonly #selected = new Set<string>();
@@ -545,6 +554,7 @@ export class ViewLeaderRuntime {
   }
 
   public annotationsSnapshot(): AnnotationsSnapshot {
+    return this.#annotationsCache(this.#runtimeRevision, () => {
     const annotations: AnnotationRuntimeSnapshot[] = this.#document.document.annotations.map((annotation) => {
       const resolved = annotation.anchors.map((leg) => this.#host.resolved(annotation.id, leg));
       return Object.freeze({
@@ -560,18 +570,22 @@ export class ViewLeaderRuntime {
       selectedIds: Object.freeze([...this.#selected].sort()),
       hoveredId: this.#hoveredId,
     });
-  }
-
-  public documentsSnapshot(): DocumentsSnapshot {
-    return Object.freeze({
-      runtimeRevision: this.#runtimeRevision,
-      documentRevision: this.#document.documentRevision,
-      document: this.#document.document,
     });
   }
 
+  public documentsSnapshot(): DocumentsSnapshot {
+    return this.#documentsCache(this.#runtimeRevision, () => Object.freeze({
+      runtimeRevision: this.#runtimeRevision,
+      documentRevision: this.#document.documentRevision,
+      document: this.#document.document,
+    }));
+  }
+
   public historySnapshot(): HistorySnapshot {
-    return this.#document.historySnapshot(this.#runtimeRevision);
+    return this.#historyCache(
+      this.#runtimeRevision,
+      () => this.#document.historySnapshot(this.#runtimeRevision),
+    );
   }
 
   public subscribe(listener: () => void): Unsubscribe {
@@ -586,6 +600,30 @@ export class ViewLeaderRuntime {
 
   public diagnosticsSnapshot(): readonly Diagnostic[] {
     return Object.freeze([...this.#diagnostics]);
+  }
+
+  /**
+   * The style one annotation is actually drawing with, and where each field came from.
+   *
+   * Unlike `geometryOf`, this does not describe a frame: it reads the document and the active saved
+   * view, both of which publish when they change, so the result is safe to hold.
+   */
+  public resolvedStyleOf(id: string): ResolvedStyle | undefined {
+    const document = this.#document.document;
+    const annotation = document.annotations.find((entry) => entry.id === id);
+    if (annotation === undefined) return undefined;
+    const definitions = [...this.#builtIns, ...definitionsFromCollections(document.definitions)];
+    const wanted = annotation.styleId ?? DEFAULT_STYLE_ID;
+    const candidate = definitions.find((entry) => entry.kind === 'style' && entry.id === wanted);
+    // Every path that could name a missing style is closed — `create`/`update` go through
+    // `#requireStyleId`, `definitions.remove` refuses a referenced id, and `documents.replace`
+    // rejects a dangling one — so this is a guard, not a case a caller can reach.
+    if (candidate?.kind !== 'style') return undefined;
+    return resolveStyleWithProvenance(
+      candidate,
+      readStyleOverride(annotation.styleOverride),
+      this.#activeViewOverrides[id]?.style ?? {},
+    );
   }
 
   /** Where an annotation is on screen, as of the last frame. Nothing if it is off screen. */
@@ -1430,6 +1468,9 @@ export class ViewLeaderRuntime {
     this.#overlay.renderPluginPreview(pluginPreview);
     this.#lastProjectionRevision = projectionRevision;
     this.#renderInvalidated = false;
+    // Past the gate at the top of this method, so this fires only for frames actually drawn — which
+    // is the whole point: geometry read here belongs to the layout that just happened.
+    emitFrame(this);
   }
 
   public start(): void {
@@ -1460,6 +1501,7 @@ export class ViewLeaderRuntime {
       () => this.#overlay.dispose(),
     ]);
     this.#listeners.clear();
+    clearFrameSeam(this);
     this.#diagnosticListeners.clear();
     this.#diagnostics.length = 0;
     this.#selected.clear();
@@ -1878,7 +1920,7 @@ function resolveStyleById(
   scale = 1,
 ): RenderStyle {
   const definitions = [...builtIns, ...customDefinitions];
-  const candidate = definitions.find((entry) => entry.kind === 'style' && entry.id === (id ?? 'builtin.style.standard'));
+  const candidate = definitions.find((entry) => entry.kind === 'style' && entry.id === (id ?? DEFAULT_STYLE_ID));
   const style = (candidate?.kind === 'style' ? candidate : undefined) as StyleDefinition | undefined;
   const base = style ?? fallback;
   // Arrowheads and label shapes are sized from the final values, not the style's originals. An
@@ -1891,6 +1933,11 @@ function resolveStyleById(
     fontFamily: override.fontFamily ?? base.fontFamily,
     fontSize: (override.fontSize ?? base.fontSize) * scale,
   };
+  // Only the five scalar fields have a fallback to fall back to, so the structural half of an
+  // override is dropped here. That is unreachable through the public API today — `create`/`update`
+  // go through `#requireStyleId`, `definitions.remove` refuses a referenced id, and
+  // `documents.replace` rejects a dangling `styleId` — so it is left as-is rather than fixed
+  // untestably. If a path ever opens, resolve the structural fields from `override` alone.
   if (style === undefined) return Object.freeze(resolved);
   const merged = mergeStyleOverride(style, override);
   const anchorHead = terminatorFor(definitions, merged.terminatorId, resolved);

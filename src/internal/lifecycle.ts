@@ -62,7 +62,14 @@ export class BoundaryLifecycle<
   }
 }
 
-export interface SnapshotCapability<Snapshot> {
+/**
+ * The shape a binding needs to observe a capability: read now, and tell me when it changes.
+ *
+ * Deliberately *not* named `SnapshotCapability` — that name belongs to the constrained public type
+ * in `types.ts`, which requires a `SnapshotStamp`. This one is unconstrained because a binding does
+ * not care what is inside the snapshot, only that it can be read and subscribed to.
+ */
+export interface SnapshotSource<Snapshot> {
   getSnapshot(): Snapshot;
   subscribe(listener: () => void): () => void;
 }
@@ -75,12 +82,12 @@ export interface SnapshotCapability<Snapshot> {
  * the capability instead and just swaps in the newest callback.
  */
 export class CapabilitySubscription<Snapshot> {
-  #capability: SnapshotCapability<Snapshot> | null = null;
+  #capability: SnapshotSource<Snapshot> | null = null;
   #listener: ((snapshot: Snapshot | null) => void) | undefined;
   #unsubscribe: (() => void) | undefined;
 
   public update(
-    capability: SnapshotCapability<Snapshot> | null,
+    capability: SnapshotSource<Snapshot> | null,
     listener: (snapshot: Snapshot | null) => void,
   ): void {
     this.#listener = listener;

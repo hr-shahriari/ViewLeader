@@ -11,7 +11,7 @@ import {
   ViewLeader,
   type ViewLeaderOptions,
 } from '../index.js';
-import type { SnapshotCapability } from './core.js';
+import { BoundaryLifecycle, type BoundaryOptions, type SnapshotSource } from './core.js';
 
 export type ReactViewLeaderOptions = Omit<ViewLeaderOptions, 'boundary'>;
 export type BoundaryRefCallback = (element: HTMLElement | null) => void;
@@ -46,17 +46,17 @@ export function useViewLeader(
   }, []);
 
   useEffect(() => {
-    if (boundary === null) {
-      setViewLeader(null);
-      return undefined;
-    }
-    const instance = new ViewLeader({
-      ...latestOptions.current,
-      boundary,
-    });
+    // `BoundaryLifecycle` owns the identity rule — the element itself decides whether this is still
+    // the same viewer — so the effect only has to say *when* to ask, never what the answer is. One
+    // lifecycle per mount, because `dispose()` is terminal and a development double-mount must not
+    // find a dead one waiting for it.
+    const lifecycle = new BoundaryLifecycle<ReactViewLeaderOptions & BoundaryOptions, ViewLeader>(
+      (resolved) => new ViewLeader(resolved),
+    );
+    const instance = lifecycle.update({ ...latestOptions.current, boundary });
     setViewLeader(instance);
     return () => {
-      instance.dispose();
+      lifecycle.dispose();
       setViewLeader((current) => (current === instance ? null : current));
     };
   }, [boundary]);
@@ -72,7 +72,7 @@ export function useViewLeader(
  * rendering. Returns `null` while the capability is not there yet.
  */
 export function useViewLeaderSnapshot<Snapshot>(
-  capability: SnapshotCapability<Snapshot> | null | undefined,
+  capability: SnapshotSource<Snapshot> | null | undefined,
 ): Snapshot | null {
   const subscribe = useCallback(
     (listener: () => void) => capability?.subscribe(listener) ?? noop,
@@ -90,4 +90,4 @@ function nullSnapshot(): null {
   return null;
 }
 
-export type { SnapshotCapability } from './core.js';
+export type { SnapshotSource } from './core.js';

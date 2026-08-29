@@ -21,6 +21,7 @@ import {
 import {
   DocumentEngine,
   type DocumentLimits,
+  type TransactionOptions,
 } from './document.js';
 import {
   EditingController,
@@ -36,6 +37,7 @@ import {
   definitionsToCollections,
   type DefinitionKind,
   type DefinitionsSnapshot,
+  type ResolvedStyle,
   type TemplateApplicable,
   type TypedDefinition,
 } from './definitions.js';
@@ -80,6 +82,7 @@ import type {
   Vec2,
   ViewLeaderDocument,
 } from './types.js';
+import { linkFrameSeam, unlinkFrameSeam } from './internal/frame-seam.js';
 
 export interface ViewLeaderOptions {
   /**
@@ -172,6 +175,17 @@ export interface AnnotationsCapability extends SnapshotCapability<AnnotationsSna
    * Setting a keynote is an ordinary metadata write; there is no special method for it.
    */
   keynotes(): readonly KeynoteEntry[];
+  /**
+   * The style this annotation is actually drawing with, and which layer supplied each field.
+   *
+   * Reads through all three layers — the active saved view's override, the annotation's own, then
+   * the style definition — so a panel can show the current value, badge what is overridden and
+   * offer "revert to style" without re-implementing the merge.
+   *
+   * Sizes are pixels and **unscaled**. Unlike `geometry.of()` this is stable and safe to hold:
+   * nothing changes it without publishing.
+   */
+  resolvedStyle(id: string): ResolvedStyle | undefined;
 }
 
 export interface DocumentsCapability extends SnapshotCapability<DocumentsSnapshot> {
@@ -181,7 +195,13 @@ export interface DocumentsCapability extends SnapshotCapability<DocumentsSnapsho
 }
 
 export interface HistoryCapability extends SnapshotCapability<HistorySnapshot> {
-  transaction<Result>(label: string, operation: () => Result): Result;
+  /**
+   * Runs `operation` as one undo step.
+   *
+   * Pass `{ coalesce: true }` to merge into the previous entry when the labels match, which is how
+   * a run of key repeats stays a single undo step. See {@link TransactionOptions}.
+   */
+  transaction<Result>(label: string, operation: () => Result, options?: TransactionOptions): Result;
   undo(): boolean;
   redo(): boolean;
 }
@@ -454,6 +474,10 @@ export class ViewLeader {
         ofInk: (id: string) => { this.#assertActive(); return this.#runtime.geometryOfInk(id); },
       });
       this.editing = this.#createEditingCapability();
+      // The runtime is the thing that draws frames, but callers only ever hold a `ViewLeader`.
+      // Linking them here keeps the seam reachable from `src/internal/` without putting a method on
+      // this class, which is exported and would therefore make it public API.
+      linkFrameSeam(this, this.#runtime);
 
       this.#publishDiagnostics(initialDiagnostics);
       if (options.selfDrive === true) this.start();
@@ -610,6 +634,9 @@ export class ViewLeader {
   public dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    // Before the steps below: a subscribe racing disposal should find nothing rather than a
+    // plausible-looking subscription to an emitter that will never fire again.
+    unlinkFrameSeam(this);
     const cleanupErrors = runCleanupSteps([
       () => this.#views.dispose(),
       () => this.#pluginAuthoring.dispose(),
@@ -704,6 +731,10 @@ export class ViewLeader {
       deselect: (id: string) => { this.#assertActive(); this.#requireAnnotation(id); this.#runtime.deselect(id); },
       clearSelection: () => { this.#assertActive(); this.#runtime.clearSelection(); },
       keynotes: () => { this.#assertActive(); return keynotesOf(this.#document.document.annotations); },
+      resolvedStyle: (id: string) => {
+        this.#assertActive();
+        return this.#runtime.resolvedStyleOf(id);
+      },
     });
   }
 
@@ -838,9 +869,9 @@ export class ViewLeader {
     return Object.freeze({
       getSnapshot: () => { this.#assertActive(); return this.#runtime.historySnapshot(); },
       subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
-      transaction: <Result>(label: string, operation: () => Result) => {
+      transaction: <Result>(label: string, operation: () => Result, options?: TransactionOptions) => {
         this.#assertActive();
-        return this.#document.transaction(label, operation);
+        return this.#document.transaction(label, operation, options);
       },
       undo: () => { this.#assertActive(); return this.#document.undo(); },
       redo: () => { this.#assertActive(); return this.#document.redo(); },

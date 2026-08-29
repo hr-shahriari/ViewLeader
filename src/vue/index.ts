@@ -11,10 +11,12 @@ import {
   type ViewLeaderOptions,
 } from '../index.js';
 import {
+  BoundaryLifecycle,
   CapabilitySubscription,
   resolveVueSource,
+  type BoundaryOptions,
   type MaybeVueSource,
-  type SnapshotCapability,
+  type SnapshotSource,
 } from './core.js';
 
 export type VueViewLeaderOptions = Omit<ViewLeaderOptions, 'boundary'>;
@@ -42,17 +44,19 @@ export function useViewLeader(
   const stop = watch(
     boundary,
     (element, _previous, onCleanup) => {
-      if (element === null) {
-        viewLeader.value = null;
-        return;
-      }
-      const instance = new ViewLeader({
+      // Same rule as the React binding, from the same class: the element is the identity, and
+      // `BoundaryLifecycle` decides whether that means keep or rebuild. One per watch run, because
+      // `dispose()` is terminal.
+      const lifecycle = new BoundaryLifecycle<VueViewLeaderOptions & BoundaryOptions, ViewLeader>(
+        (resolved) => new ViewLeader(resolved),
+      );
+      const instance = lifecycle.update({
         ...resolveVueSource(optionsSource),
         boundary: element,
       });
       viewLeader.value = instance;
       onCleanup(() => {
-        instance.dispose();
+        lifecycle.dispose();
         if (viewLeader.value === instance) viewLeader.value = null;
       });
     },
@@ -81,7 +85,7 @@ export function useViewLeader(
  */
 export function useViewLeaderSnapshot<Snapshot>(
   capabilitySource: MaybeVueSource<
-    SnapshotCapability<Snapshot> | null | undefined
+    SnapshotSource<Snapshot> | null | undefined
   >,
 ): Readonly<ShallowRef<Snapshot | null>> {
   const snapshot: ShallowRef<Snapshot | null> = shallowRef<Snapshot | null>(null);
@@ -102,4 +106,4 @@ export function useViewLeaderSnapshot<Snapshot>(
   return snapshot as Readonly<ShallowRef<Snapshot | null>>;
 }
 
-export type { SnapshotCapability } from './core.js';
+export type { SnapshotSource } from './core.js';

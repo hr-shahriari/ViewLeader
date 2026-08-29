@@ -20,6 +20,7 @@ import type {
   Unsubscribe,
   Vec2,
 } from './types.js';
+import { revisionCache } from './internal/snapshot-cache.js';
 
 /** The most bends a hand-drawn leader may have. Matches the limit the document enforces. */
 const MAX_MANUAL_VERTICES = 64;
@@ -92,6 +93,7 @@ export class AuthoringController {
   readonly #picking: AccuratePickingAdapter | undefined;
   readonly #statusElement: HTMLDivElement;
   readonly #listeners = new Set<() => void>();
+  readonly #snapshotCache = revisionCache<AuthoringSnapshot>();
   readonly #documentUnsubscribe: Unsubscribe;
   #active: ActiveSession | undefined;
   #sequence = 0;
@@ -132,6 +134,7 @@ export class AuthoringController {
 
   public getSnapshot(): AuthoringSnapshot {
     const stamp = this.#runtime.documentsSnapshot();
+    return this.#snapshotCache(stamp.runtimeRevision, () => {
     const active = this.#active;
     return Object.freeze({
       runtimeRevision: stamp.runtimeRevision,
@@ -143,6 +146,7 @@ export class AuthoringController {
         ? null
         : Object.freeze({ ...active.preview }),
       status: this.#status,
+    });
     });
   }
 

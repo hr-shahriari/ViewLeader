@@ -3,7 +3,7 @@ export {
   CapabilitySubscription,
   type BoundaryOptions,
   type DisposableViewLeader,
-  type SnapshotCapability,
+  type SnapshotSource,
   type ViewLeaderFactory,
 } from '../internal/lifecycle.js';
 
