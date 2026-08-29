@@ -239,6 +239,28 @@ describe('unrecognised means future, invalid means broken', () => {
     expect(view.annotations.getSnapshot().annotations).toEqual([]);
     view.dispose();
   });
+
+  // The id rule is the persisted-format contract, so both ends have to agree: what an author is
+  // refused is exactly what the saved file could not have held, and what the file holds is what an
+  // author could have written. `'9lives...'` pins the leading digit on purpose -- `definitions.ts`
+  // uses a stricter rule that demands a leading letter, so a future "unify the id validators"
+  // refactor fails here instead of silently breaking hosts whose ids start with a digit.
+  it('refuses an id the saved format cannot hold, and keeps every character it can', () => {
+    const view = leader();
+    for (const id of ['AHU #3', '_internal', 'chiller/primary', 'pompe-à-eau', 'x'.repeat(129)]) {
+      expect(() => view.annotations.create({
+        id,
+        anchor: { kind: 'world-point', point: { x: 0, y: 0, z: 0 } },
+        content: { kind: 'plain-note', text: 'authored' },
+      })).toThrow(InvalidDocumentError);
+    }
+    expect(view.annotations.getSnapshot().annotations).toEqual([]);
+
+    view.documents.replace(plainDocument([plainAnnotation('9lives.a_b:c-d')]) as never);
+    const saved = JSON.parse(view.documents.serialize()) as { annotations: Array<{ id: string }> };
+    expect(saved.annotations.map(({ id }) => id)).toEqual(['9lives.a_b:c-d']);
+    view.dispose();
+  });
 });
 
 describe('tier one is unchanged', () => {

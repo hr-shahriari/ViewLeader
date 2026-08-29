@@ -79,12 +79,23 @@ describe('editing: drag a label', () => {
     drag(leader, { x: 510, y: 390 }, { x: 560, y: 420 });
 
     const placement = leader.annotations.get('a1')!.placement;
-    expect(placement).toEqual({ kind: 'manual', position: { x: 550, y: 410 } });
+    // The anchor is the world origin, which this projection puts at (400, 300). It is stored
+    // alongside the drop point so the label can be re-measured against it on later frames.
+    expect(placement).toEqual({
+      kind: 'manual',
+      position: { x: 550, y: 410 },
+      anchor: { x: 400, y: 300 },
+    });
     expect(leader.geometry.of('a1')!.label).toMatchObject({ x: 550, y: 410 });
     leader.dispose();
   });
 
-  it('survives camera orbit, because it is a placement and not a screen offset', () => {
+  // RE-GRADED (issue 09). This case used to assert the opposite — "survives camera orbit, because
+  // it is a placement and not a screen offset" — and that was the bug, asserted as intent: a
+  // dragged callout ended up beside a different part of the model as soon as the camera turned.
+  // A drag now stores the anchor it was dropped against, so the label travels with it. A host that
+  // still wants a viewport pin has `annotations.move()`, which writes an unanchored placement.
+  it('follows its anchor through a camera orbit, because the drag stored what it points at', () => {
     let offset = 0;
     const orbiting: HostAdapterBundle = {
       projection: {
@@ -104,9 +115,59 @@ describe('editing: drag a label', () => {
 
     offset = 120;
     leader.update();
-    // The anchor moved with the camera; the label did not, because it is pinned in screen space.
-    expect(leader.geometry.of('a1')!.label).toMatchObject({ x: dropped.x, y: dropped.y });
+    // The anchor moved 120px with the camera, and the label moved with it — same distance, same
+    // direction, so the callout still reads against the thing it names.
+    expect(leader.geometry.of('a1')!.label).toMatchObject({ x: dropped.x + 120, y: dropped.y });
+    // The anchor end of the leader: 400 + 120, exactly the distance the label travelled.
     expect(leader.geometry.of('a1')!.handles[0]!.at.x).toBeCloseTo(520, 6);
+    leader.dispose();
+  });
+
+  it('stays put through an orbit when the placement carries no anchor', () => {
+    // The escape hatch the flip leaves behind: `annotations.move` on a label that was never
+    // dragged writes a bare screen pin, and a bare pin is still a viewport pin.
+    let offset = 0;
+    const orbiting: HostAdapterBundle = {
+      projection: {
+        getViewport: () => ({ ...VIEWPORT, devicePixelRatio: 1 }),
+        project: (point) => ({
+          point: { x: 400 + offset + point.x * 10, y: 300 - point.y * 10 },
+          depth: point.z,
+          visible: true,
+        }),
+      },
+    };
+    const { leader } = makeLeader({ adapters: orbiting });
+    leader.annotations.create(note('a1'));
+    leader.update();
+    leader.annotations.move('a1', { x: 600, y: 390 });
+    leader.update();
+    expect(leader.annotations.get('a1')!.placement).toEqual({
+      kind: 'manual',
+      position: { x: 600, y: 390 },
+    });
+
+    offset = 120;
+    leader.update();
+    expect(leader.geometry.of('a1')!.label).toMatchObject({ x: 600, y: 390 });
+    leader.dispose();
+  });
+
+  it('a nudge after a drag keeps the label anchored, rather than re-pinning it to the viewport', () => {
+    // The gallery's own arrow-key nudge (demo/src/pages/host-chrome.ts) reads the drawn label and
+    // calls `move`, so without this the first keypress would silently undo the drag.
+    const { leader } = makeLeader();
+    leader.annotations.create(note('a1', { x: 500, y: 380 }));
+    leader.update();
+    drag(leader, { x: 510, y: 390 }, { x: 560, y: 420 });
+    const label = leader.geometry.of('a1')!.label;
+    leader.annotations.move('a1', { x: label.x + 1, y: label.y });
+
+    expect(leader.annotations.get('a1')!.placement).toEqual({
+      kind: 'manual',
+      position: { x: 551, y: 410 },
+      anchor: { x: 400, y: 300 },
+    });
     leader.dispose();
   });
 
@@ -141,6 +202,7 @@ describe('editing: drag a label', () => {
     expect(leader.annotations.get('a1')!.placement).toEqual({
       kind: 'manual',
       position: { x: 540, y: 380 },
+      anchor: { x: 400, y: 300 },
     });
     leader.dispose();
   });

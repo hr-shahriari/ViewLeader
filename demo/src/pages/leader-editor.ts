@@ -102,16 +102,16 @@ try {
       // OrbitControls while it is held, so an edit and an orbit can never run at once.
       controls: harness.controls,
     }),
-    // `marquee: 'modifier'` is what buys the camera back, and nothing else would. The default
-    // `'empty-space'` sends every plain left-press that misses an annotation to a rubber-band
-    // selection, which takes the interaction lease, which the adapter above turns into
-    // `controls.enabled = false` — so left-drag orbit dies on a page whose whole subject is direct
-    // manipulation. The old workaround was to unbind the left button here and move orbit onto the
-    // right, which cost pan as well and left a visitor dragging a model that never moved.
-    // Declining the marquee instead means core never takes the lease, so OrbitControls' own
-    // pointerdown — which fired first, on the canvas below — just runs to completion. Shift-drag
-    // and alt-drag still marquee: they are the same two modifiers the marquee already reads to add
-    // to and subtract from the selection.
+    // `marquee: 'modifier'` asks for the rubber band back, on a shift- or alt-drag only. The
+    // camera is already safe without it: this page hands core an interaction adapter — `controls`
+    // above — so the default is `'none'`, core never takes the lease on empty space, and
+    // OrbitControls' own pointerdown, which fired first on the canvas below, runs to completion.
+    // A marquee on every plain left-press would take the lease, which the adapter turns into
+    // `controls.enabled = false`, killing left-drag orbit on a page whose whole subject is direct
+    // manipulation. The workaround for that used to be unbinding the left button here and moving
+    // orbit onto the right, which cost pan as well and left a visitor dragging a model that never
+    // moved. Shift and alt are the same two modifiers the marquee already reads to add to and
+    // subtract from the selection.
     editing: { gestures: true, marquee: 'modifier' },
   });
 

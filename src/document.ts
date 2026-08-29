@@ -907,7 +907,14 @@ function normalizePlacement(value: unknown): AnnotationPlacement {
     return { kind: 'automatic' };
   }
   if (input.kind === 'manual') {
-    return { kind: 'manual', position: vec2(input.position, 'manual placement position') };
+    return {
+      kind: 'manual',
+      position: vec2(input.position, 'manual placement position'),
+      // Optional, so a file written before it — or by a host that only ever calls
+      // `annotations.move()` — stays an absolute screen pin. `vec2` is the whole trust check:
+      // an anchor with a non-finite component would be subtracted from a position every frame.
+      ...(input.anchor === undefined ? {} : { anchor: vec2(input.anchor, 'manual placement anchor') }),
+    };
   }
   throw unknownKind('placement', input.kind);
 }
@@ -1278,7 +1285,10 @@ function isThenable(value: unknown): boolean {
 
 function assertId(value: string, label: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
-    throw new InvalidDocumentError(`${label} has an invalid format`, { value });
+    throw new InvalidDocumentError(
+      `${label} must start with a letter or digit and use only letters, digits, . _ : - (1–128 characters)`,
+      { value },
+    );
   }
 }
 

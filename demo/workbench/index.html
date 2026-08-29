@@ -17,10 +17,11 @@
             <li><b>Crowd (30 notes)</b> — a deliberately dense drawing. Orbit it and watch the placer keep the labels off each other.</li>
             <li><b>Standards: N</b> — a live drafting-standards lint, re-run every frame, so the count changes as you orbit. Click it to select the annotations it is complaining about.</li>
             <li><b>Dispose</b> — tears the runtime down. The canvas keeps painting and nothing ViewLeader owned is left in the boundary.</li>
+            <li><b>Export sheet</b> — the composed drawing as a standalone SVG with a title block, straight from <code>leader.overlayElement</code>. Grips and hit targets are marked <code>data-non-printing</code> where core creates them, so the file holds the drawing and nothing else.</li>
             <li><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</li>
             <li><b>Occlusion</b> — what a buried leg does, set on every annotation at once in a single undo step. <b>keep</b>, the default, dashes and dims it. <b>fade</b> also drops a note whose every leg is buried to a quarter opacity. <b>hide</b> does not draw a buried leg at all — no stroke, no arrowhead, no click target — so crowd the drawing and then pick it: the leaders pointing into the far side of the building stop competing for attention and the review becomes readable.</li>
           </ul>
-          <p><b>API:</b> <code>annotations.create/select</code> · <code>annotations.update(id, { occlusion })</code> · <code>authoring.markup.begin('ink')</code> · <code>markup.commitInk()</code> · <code>views.save/activate</code> · <code>diagnostics.lintFrame({ pixelsPerMillimetre })</code> · <code>history.transaction()</code> · <code>history.getSnapshot()</code> · <code>leader.dispose()</code></p>
+          <p><b>API:</b> <code>annotations.create/select</code> · <code>annotations.update(id, { occlusion })</code> · <code>authoring.markup.begin('ink')</code> · <code>markup.commitInk()</code> · <code>views.save/activate</code> · <code>diagnostics.lintFrame({ pixelsPerMillimetre })</code> · <code>history.transaction()</code> · <code>history.getSnapshot()</code> · <code>leader.dispose()</code> · <code>exportVectorSheet(leader.overlayElement)</code></p>
         </div>
       </details>
       <a href="/src/pages/workbench.ts.txt">View source</a>

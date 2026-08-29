@@ -61,9 +61,13 @@ try {
 
   // The grid, drawn. Without it "Snap to grid: on" moves labels to lines nobody can see, so the one
   // effect this page exists to show reads as jitter. Two tiled CSS gradients at the same pitch and
-  // the same origin as `Math.round(x / GRID) * GRID` above, so a snapped label sits on a line you
-  // can point at — no per-frame work, and nothing to redraw when the camera moves, because the grid
-  // is screen space and so is the snap. `pointer-events: none` is not optional: this element covers
+  // the same origin as `Math.round(x / GRID) * GRID` above, so a label lands on a line you can point
+  // at when you release it — no per-frame work, and nothing to redraw when the camera moves, because
+  // the grid is screen space and so is the snap. A drop is stored against its anchor, not as a screen
+  // pin, so a snapped label leaves its line as the camera turns: re-snapping every frame would make
+  // labels hop between cells during an orbit, so the grid is where a drop LANDS, not where it lives.
+  // Align and Distribute still write absolute pins, so aligning a dragged label stops it following.
+  // `pointer-events: none` is not optional: this element covers
   // the very viewport core's gesture listeners are bound to. Appended before `new ViewLeader`, so
   // core's SVG stacks above it and the grid can never sit on top of an annotation.
   const gridOverlay = document.createElement('div');
@@ -89,17 +93,22 @@ try {
   const leader = new ViewLeader({
     boundary: viewport,
     adapters,
-    // `marquee: 'modifier'` is what leaves OrbitControls its default buttons. The default
-    // `'empty-space'` sends every plain left-press that misses an annotation to a rubber-band
-    // selection, which takes the interaction lease, which the adapter above turns into
-    // `controls.enabled = false` — so left-drag orbit dies, and a first-time visitor drags the
+    // The wheel is the one camera input the overlay can still swallow: a label's hit pad takes
+    // pointer events, so a scroll over a label never reaches the canvas and zoom dies over every
+    // annotation on the page. Core re-dispatches it; a wheel that already passed through the canvas
+    // on its own way up is left alone, so nothing is delivered twice.
+    forwardWheelTo: harness.renderer.domElement,
+    // `marquee: 'modifier'` asks for the rubber band back, on a shift- or alt-drag only. It is an
+    // opt-in here, not a repair: because this page hands core an interaction adapter — `controls`
+    // above — the default is already `'none'`, so core never takes the lease on empty space and
+    // OrbitControls' own pointerdown, which fired first on the canvas below, runs to completion.
+    // A marquee on every plain left-press would take the lease, which the adapter turns into
+    // `controls.enabled = false`, and left-drag orbit would die: a first-time visitor drags the
     // model, sees nothing move, and reads the page as broken before touching an annotation. The
-    // old workaround here was to unbind the left button and move orbit onto the right, which cost
-    // pan as well: no orbit and no pan, on the page whose whole subject is dragging things.
-    // Declining the marquee instead means core never takes the lease on empty space, so
-    // OrbitControls' own pointerdown — which fired first, on the canvas below — just runs to
-    // completion. Shift-drag and alt-drag still marquee: they are the same two modifiers the
-    // marquee already reads to add to and subtract from the selection.
+    // workaround for that used to be unbinding the left button and moving orbit onto the right,
+    // which cost pan as well: no orbit and no pan, on the page whose whole subject is dragging
+    // things. Shift and alt are the same two modifiers the marquee already reads to add to and
+    // subtract from the selection.
     editing: { gestures: true, marquee: 'modifier' },
     strategies: {
       // Screen-space, called for every automatically placed label AND for the live drag preview, so

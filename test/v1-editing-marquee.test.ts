@@ -277,9 +277,43 @@ describe('editing: marquee select', () => {
     leader.dispose();
   });
 
-  it('the default is every plain press on empty space, unchanged', () => {
+  it('with no interaction adapter the default is every plain press on empty space', () => {
+    const { leader } = makeLeader(fixedAdapters);
+    leader.annotations.create(note('a1', { x: 100, y: 100 }));
+    leader.update();
+
+    marquee(leader, { x: 50, y: 50 }, { x: 200, y: 200 });
+
+    expect(leader.annotations.getSnapshot().selectedIds).toEqual(['a1']);
+    leader.dispose();
+  });
+
+  it('with an interaction adapter the default declines, and takes no interaction lease', () => {
     const counter = { acquired: 0 };
     const { leader } = makeLeader(countingAdapters(counter));
+    leader.annotations.create(note('a1', { x: 100, y: 100 }));
+    leader.update();
+
+    leader.editing.pointerDown(at(50, 50));
+    expect(leader.editing.getSnapshot().phase).toBe('idle');
+    leader.editing.pointerMove(at(200, 200));
+    leader.update();
+
+    expect(leader.editing.getSnapshot().phase).toBe('idle');
+    // The lease is the whole point: a host that wires it to its camera controls keeps left-drag
+    // orbit on every press that misses an annotation, without having to know this option exists.
+    expect(counter.acquired).toBe(0);
+    leader.editing.pointerUp(at(200, 200));
+    expect(leader.annotations.getSnapshot().selectedIds).toEqual([]);
+    leader.dispose();
+  });
+
+  it("an explicit marquee: 'empty-space' outranks the interaction adapter", () => {
+    // The migration path for a host that supplies `interaction` for authoring rather than for a
+    // camera, and wants the rubber band back. Without this case, an implementation that lets the
+    // adapter override what the host typed passes every other test here.
+    const counter = { acquired: 0 };
+    const { leader } = makeLeader(countingAdapters(counter), { marquee: 'empty-space' });
     leader.annotations.create(note('a1', { x: 100, y: 100 }));
     leader.update();
 

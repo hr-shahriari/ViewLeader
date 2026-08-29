@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderMarkdownPluginContent } from 'viewleader/markdown';
-import { layoutBuiltInContent, type TextPrimitive } from '../src/content.js';
+import { DEFAULT_FONT_FAMILY, layoutBuiltInContent, type TextPrimitive } from '../src/content.js';
 import { measureText } from '../src/textMetrics.js';
 
 function textLines(content: Parameters<typeof layoutBuiltInContent>[0]): {
@@ -58,7 +58,7 @@ describe('markdown inline run advance', () => {
     for (const run of runs) {
       expect(run.position.x).toBeCloseTo(expectedX, 6);
       expectedX += measureText(run.text, {
-        family: run.code === true ? 'monospace' : 'Inter, "Noto Sans", Arial, sans-serif',
+        family: run.code === true ? 'monospace' : DEFAULT_FONT_FAMILY,
         size: run.fontSize,
         bold: run.bold === true,
       });

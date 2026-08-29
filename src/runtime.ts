@@ -134,6 +134,7 @@ export interface FrameLintOptions extends Partial<Omit<LintOptions, 'pixelsPerMi
 }
 import type {
   Annotation,
+  AnnotationPlacement,
   AnnotationRuntimeSnapshot,
   AnnotationsSnapshot,
   BuiltInContent,
@@ -189,6 +190,8 @@ export interface RuntimeOptions {
   readonly strategies?: LayoutStrategies;
   /** The colour scheme the built-in styles are drawn in. */
   readonly theme?: Theme;
+  /** Where wheel events over the overlay are re-dispatched to, usually the viewer's canvas. */
+  readonly forwardWheelTo?: Element;
 }
 
 interface ProjectedLeg {
@@ -273,6 +276,10 @@ export class ViewLeaderRuntime {
   readonly #labelPlacer = new LabelPlacer();
   readonly #boundaryMemory = new BoundaryMemory();
   readonly #previousSectors = new Map<string, LabelSector>();
+  /** Where each annotation's anchors averaged out on screen this frame — the quantity an
+   *  anchor-relative placement is measured against. Rebuilt from scratch every arrangement, so an
+   *  annotation that was not placed this frame is simply absent. */
+  readonly #anchorOrigins = new Map<string, Vec2>();
   readonly #layoutCache = new Map<string, Readonly<{
     signature: string;
     layout: RenderableContentLayout;
@@ -470,6 +477,26 @@ export class ViewLeaderRuntime {
       this.#window?.addEventListener('resize', onResize);
       if (this.#window !== null) {
         this.#cleanup.push(() => this.#window?.removeEventListener('resize', onResize));
+      }
+      // Wheel forwarding. Anything in the overlay that takes pointer events — a label's hit pad —
+      // swallows the wheel, and the canvas below never hears it, so zoom dies over every label.
+      // Duck-typed like `isPointerEvent` (src/pointer.ts): synthesised events from another realm
+      // are something this codebase already produces. The boundary's own `defaultView` is read
+      // here because `Window` has no `WheelEvent` member, so `this.#window.WheelEvent` will not
+      // compile.
+      const forwardTo = options.forwardWheelTo;
+      const view = options.boundary.ownerDocument.defaultView;
+      if (forwardTo !== undefined && view !== null) {
+        const onWheel = (event: Event): void => {
+          if (!('deltaY' in event)) return;
+          // Already delivered on its own way up — the canvas is inside the boundary.
+          if (event.composedPath().includes(forwardTo)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          forwardTo.dispatchEvent(new view.WheelEvent(event.type, event as WheelEvent));
+        };
+        options.boundary.addEventListener('wheel', onWheel, { passive: false });
+        this.#cleanup.push(() => options.boundary.removeEventListener('wheel', onWheel));
       }
       const ResizeObserverConstructor = globalThis.ResizeObserver;
       if (ResizeObserverConstructor !== undefined) {
@@ -935,8 +962,19 @@ export class ViewLeaderRuntime {
   }
 
   /**
+   * The placement a label drag should store: the drop point plus the anchor it was measured
+   * against, so the label follows the camera. Degrades to a bare pin if the annotation was not
+   * placed this frame.
+   */
+  public placementAt(id: string, position: Vec2): AnnotationPlacement {
+    const anchor = this.#anchorOrigins.get(id);
+    return { kind: 'manual', position, ...(anchor === undefined ? {} : { anchor }) };
+  }
+
+  /**
    * Arranges the automatically placed labels around the frame. Labels the user positioned by hand,
-   * or a saved view pinned, keep exactly where they are.
+   * or a saved view pinned, keep exactly where they are — a hand-placed label that recorded its
+   * anchor keeps its distance from that anchor rather than its screen coordinates.
    */
   #placeAroundFrame(
     inputs: readonly PlacementInput[],
@@ -947,22 +985,45 @@ export class ViewLeaderRuntime {
     const automatic: Array<{ id: string; screenPos: Vec2 }> = [];
     const labelDims = new Map<string, { width: number; height: number }>();
     const anchorsById = new Map<string, Vec2>();
+    this.#anchorOrigins.clear();
 
     for (const input of inputs) {
       const { width, height } = input.labelSize;
-      if (input.placement.kind === 'manual') {
-        const { position } = input.placement;
-        byPlacement.set(input.id, { x: position.x, y: position.y, width, height });
-        continue;
-      }
       const anchors = input.projectedAnchors.filter(
         (anchor) => Number.isFinite(anchor.x) && Number.isFinite(anchor.y),
       );
-      if (anchors.length === 0) continue;
-      const screenPos = centroid(anchors);
-      automatic.push({ id: input.id, screenPos });
+      // Computed for every placement kind, not just the automatic ones, and from the same anchors
+      // the automatic path rails from — so a label switching between the two does not jump.
+      //
+      // The centroid, not the first leg: it is the only reference point that already exists, and
+      // "first leg" would move the whole label the moment leg 1 left the frustum.
+      //
+      // ponytail: on a multi-leg annotation the origin still steps when one of its *own* legs
+      // leaves the frustum. That is not a no-swim violation — the invariant is about unrelated
+      // annotations, and the automatic path has behaved this way since day one. Upgrade path, if
+      // it ever bites: remember the last full-anchor-set centroid per annotation the way
+      // `#previousSectors` remembers sides.
+      const origin = anchors.length === 0 ? undefined : centroid(anchors);
+      if (origin !== undefined) this.#anchorOrigins.set(input.id, origin);
+      if (input.placement.kind === 'manual') {
+        const stored = input.placement;
+        // An anchor recorded at drop time turns the stored point into an offset from what the
+        // label points at. With no anchor stored, or nothing on screen to measure against, the
+        // stored point is used as written — which is both the old behaviour and the right
+        // fallback, since it is where the user actually dropped it.
+        const base = stored.anchor === undefined || origin === undefined
+          ? stored.position
+          : {
+            x: stored.position.x + origin.x - stored.anchor.x,
+            y: stored.position.y + origin.y - stored.anchor.y,
+          };
+        byPlacement.set(input.id, { x: base.x, y: base.y, width, height });
+        continue;
+      }
+      if (origin === undefined) continue;
+      automatic.push({ id: input.id, screenPos: origin });
       labelDims.set(input.id, { width, height });
-      anchorsById.set(input.id, screenPos);
+      anchorsById.set(input.id, origin);
     }
 
     if (automatic.length === 0) {
@@ -1013,6 +1074,11 @@ export class ViewLeaderRuntime {
    * and after separation, so a host's snap is the last word on where a label sits. Only
    * automatically-placed labels are offered: a manual
    * placement is what the user (or a prior, already-snapped drag) asked for, not layout's proposal.
+   *
+   * Which means a snapped drag lands on the host's grid and then drifts off it as the camera
+   * moves, because the drop is stored relative to its anchor. Deliberate: re-snapping every frame
+   * would let the label jump between grid cells while the user is only orbiting. Revisit if a host
+   * with a real grid asks for it.
    * Mutates `placement` in place and also returns it, so the snapped bounds are what `update()` both
    * routes legs from and remembers in `#previousPlacement` — hysteresis must remember the snapped
    * point, or a snapping host would see the label swim between the raw and the snapped position.
@@ -1060,7 +1126,9 @@ export class ViewLeaderRuntime {
   ): void {
     if (placement.size < 2) return;
     const immovable = new Set(
-      inputs.filter((input) => input.placement.kind === 'manual' || input.locked).map((input) => input.id),
+      inputs
+        .filter((input) => input.placement.kind !== 'automatic' || input.locked)
+        .map((input) => input.id),
     );
     const separated = separateLabels(
       [...placement].map(([id, bounds]) => ({
@@ -1403,6 +1471,7 @@ export class ViewLeaderRuntime {
     this.#selectedInk.clear();
     this.#lastInk = Object.freeze([]);
     this.#previousPlacement.clear();
+    this.#anchorOrigins.clear();
     this.#layoutCache.clear();
     this.#imageOwners.clear();
     this.#hoveredId = null;

@@ -163,6 +163,19 @@ export interface AutomaticPlacement {
 export interface ManualPlacement {
   readonly kind: 'manual';
   readonly position: Vec2;
+  /**
+   * Where the label's anchor was on screen when the position was chosen. Present means the label
+   * follows what it points at: it is drawn at `position` plus however far the anchor has moved
+   * since, so orbiting the camera carries the callout along with its pipe instead of leaving it
+   * beside a different one. Absent means the position is a plain screen pin, which is what
+   * `annotations.move()` writes and what every document authored before this field says.
+   *
+   * Written by a label drag, which is the only place ViewLeader knows both halves at once. It is
+   * deliberately additive rather than a new `kind`: an older build reading a file with it drops
+   * the field and draws the label at `position` — where the user dropped it — instead of
+   * quarantining the annotation and drawing nothing.
+   */
+  readonly anchor?: Vec2;
 }
 
 export type AnnotationPlacement = AutomaticPlacement | ManualPlacement;
@@ -228,6 +241,21 @@ export interface Annotation {
 }
 
 export interface AnnotationDraft {
+  /**
+   * Leave it out and one is generated — the usual case. Supply one only when something outside the
+   * document already names this annotation (a row in your database, a BCF topic) and the two have to
+   * stay in step across a save and a reload.
+   *
+   * A supplied id must start with a letter or a digit and then use only letters, digits, `.`, `_`,
+   * `:` and `-`, up to 128 characters; anything else throws `InvalidDocumentError`. That is exactly
+   * the rule the saved file enforces, so an id `create()` accepts is an id that survives a round
+   * trip — the check is here, at authoring time, rather than at save time when the offending call is
+   * long gone.
+   *
+   * Foreign identifiers usually do not fit: an IFC GlobalId may contain `$`, and free-text component
+   * ids carry spaces, slashes and accents. Map them to an id of your own and keep the original in
+   * `metadata` — that is what the BCF importer does rather than passing topic ids through.
+   */
   readonly id?: string;
   /** Shorthand for an annotation with a single leader line. Give either this or `anchors`. */
   readonly anchor?: Anchor;

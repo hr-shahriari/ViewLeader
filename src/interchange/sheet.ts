@@ -1,3 +1,5 @@
+import { FONT_STACK } from '../theme.js';
+
 export interface SheetTitleBlock {
   readonly drawingNumber: string;
   readonly scale: string;
@@ -8,7 +10,24 @@ export interface VectorSheetOptions {
   readonly width?: number;
   readonly height?: number;
   readonly paper?: string;
+  /**
+   * A picture of the model to draw the annotations on top of — normally the viewer's own canvas,
+   * `canvas.toDataURL('image/png')`.
+   *
+   * It must be a `data:` URI, not an `http(s):` one: the sheet is a standalone file, and a remote
+   * reference would be a broken link everywhere it is opened (and would taint the canvas on the
+   * raster path). It is placed in the annotations' own coordinate space, so it registers with them
+   * whatever sheet size you asked for.
+   */
   readonly underlayDataUrl?: string;
+  /**
+   * How the drawing is fitted into the sheet when the two have different proportions. SVG's own
+   * `preserveAspectRatio` vocabulary, passed straight through to the frame the content sits in.
+   *
+   * Defaults to `'xMidYMid meet'` — the whole drawing, centred, nothing cropped. `'xMidYMid slice'`
+   * fills the sheet and crops instead; `'none'` stretches.
+   */
+  readonly preserveAspectRatio?: string;
   readonly titleBlock?: SheetTitleBlock;
 }
 
@@ -55,24 +74,22 @@ function createSvg(document: Document, name: string): SVGElement {
 }
 
 function removeConstructionGeometry(root: SVGSVGElement): void {
+  // The contract: chrome is marked `data-non-printing` where it is created, in `src/render.ts`. Do
+  // not grow this list — a selector here and a renderer there is exactly how it drifted apart
+  // before. The rest are host-content defence: nothing the renderer emits writes them, but the
+  // overlay is the host's element and the host may have put its own layers in it.
   const selectors = [
     '[data-non-printing]',
-    '.viewleader-route-hit',
-    '.viewleader-guide',
-    '.viewleader-route-grip',
-    '.viewleader-editor',
-    '.viewleader-debug',
-    '.viewleader-transition-layer',
     '[data-presentation-layer]',
     '[hidden]',
     '[aria-hidden="true"]',
   ];
   for (const element of root.querySelectorAll(selectors.join(','))) element.remove();
   for (const element of root.querySelectorAll<SVGElement>('[style*="display: none"]')) element.remove();
-  for (const selected of root.querySelectorAll<SVGElement>('[data-selected], [data-selection]')) {
+  for (const selected of root.querySelectorAll<SVGElement>('[data-selected], [data-selection], .viewleader-selected')) {
     selected.removeAttribute('data-selected');
     selected.removeAttribute('data-selection');
-    selected.classList.remove('selected', 'is-selected');
+    selected.classList.remove('viewleader-selected', 'selected', 'is-selected');
   }
   for (const animated of root.querySelectorAll<SVGElement>('*')) {
     animated.removeAttribute('data-dash-animation');
@@ -87,12 +104,16 @@ function removeConstructionGeometry(root: SVGSVGElement): void {
   }
 }
 
+// Text this file draws itself has to name a family. Nothing sets one for it: the sheet is a
+// standalone document, and an SVG `<text>` with no `font-family` renders in the viewer's serif
+// default — Times, in every browser and in the raster export.
 function replaceEmbeddedHtml(root: SVGSVGElement): void {
   for (const embedded of root.querySelectorAll<SVGElement>('[data-embedded-html]')) {
     const text = createSvg(root.ownerDocument, 'text');
     text.textContent = '[Embedded HTML omitted from sheet]';
     text.setAttribute('x', embedded.getAttribute('x') ?? '0');
     text.setAttribute('y', embedded.getAttribute('y') ?? '0');
+    text.setAttribute('font-family', FONT_STACK);
     text.setAttribute('data-export-placeholder', 'embedded-html');
     embedded.replaceWith(text);
   }
@@ -122,34 +143,46 @@ function prepareMarkdownImages(root: SVGSVGElement): void {
     warning.textContent = `Image unavailable for export${node.getAttribute('data-alt') ? `: ${node.getAttribute('data-alt')}` : ''}`;
     warning.setAttribute('x', node.getAttribute('x') ?? '0');
     warning.setAttribute('y', String(Number(node.getAttribute('y') ?? 0) + 16));
+    warning.setAttribute('font-family', FONT_STACK);
     group.append(rect, warning);
     node.replaceWith(group);
   }
 }
 
+/**
+ * Paper is sheet furniture, so it goes on the root at sheet size. The underlay is a picture of the
+ * same scene the annotations were laid out over, so it goes inside `frame` at content size — the
+ * one place where it registers with them under any fit.
+ */
 function prependComposition(
   root: SVGSVGElement,
-  width: number,
-  height: number,
+  frame: SVGSVGElement,
+  sheet: { readonly width: number; readonly height: number },
+  content: { readonly width: number; readonly height: number },
   options: VectorSheetOptions,
 ): void {
-  const first = root.firstChild;
   if (options.underlayDataUrl) {
-    const image = createSvg(root.ownerDocument, 'image');
+    const image = createSvg(frame.ownerDocument, 'image');
     image.setAttribute('x', '0');
     image.setAttribute('y', '0');
-    image.setAttribute('width', String(width));
-    image.setAttribute('height', String(height));
-    image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    image.setAttribute('width', String(content.width));
+    image.setAttribute('height', String(content.height));
+    // The image box is now the frame's own viewport box, so `meet`, `slice` and `none` all agree on
+    // the result. `none` is the one that stays registered when device-pixel rounding makes the two
+    // ratios differ in the last decimal.
+    image.setAttribute('preserveAspectRatio', 'none');
+    // Both spellings: librsvg and Illustrator before CC 2018 read only the xlink one, and
+    // `prepareMarkdownImages` already sets both for the same reason.
     image.setAttribute('href', options.underlayDataUrl);
-    root.insertBefore(image, first);
+    image.setAttributeNS(XLINK_NS, 'xlink:href', options.underlayDataUrl);
+    frame.insertBefore(image, frame.firstChild);
   }
   if (options.paper) {
     const paper = createSvg(root.ownerDocument, 'rect');
     paper.setAttribute('x', '0');
     paper.setAttribute('y', '0');
-    paper.setAttribute('width', String(width));
-    paper.setAttribute('height', String(height));
+    paper.setAttribute('width', String(sheet.width));
+    paper.setAttribute('height', String(sheet.height));
     paper.setAttribute('fill', options.paper);
     root.insertBefore(paper, root.firstChild);
   }
@@ -186,12 +219,21 @@ function appendTitleBlock(
     text.textContent = row;
     text.setAttribute('x', String(x + 10));
     text.setAttribute('y', String(y + 22 + index * 22));
+    text.setAttribute('font-family', FONT_STACK);
     text.setAttribute('font-size', '12');
     group.append(text);
   });
   root.append(group);
 }
 
+/**
+ * Renders the overlay's current frame as a standalone SVG sheet.
+ *
+ * Two coordinate spaces, not one. The root is the *sheet*: paper and title block are laid out in
+ * it, at whatever `width`/`height` you asked for. The annotations were laid out in the *overlay's*
+ * pixels and are worth nothing re-labelled — so they are moved into a nested `<svg>` frame that
+ * carries their own viewBox and is fitted to the sheet by `preserveAspectRatio`.
+ */
 export function exportVectorSheet(
   overlay: SVGSVGElement | undefined,
   options: VectorSheetOptions = {},
@@ -200,22 +242,44 @@ export function exportVectorSheet(
     throw new Error('Cannot export a sheet before ViewLeader has rendered a frame');
   }
   const { width, height } = resolveSize(overlay, options);
+  // The overlay's own size, ignoring the requested sheet size — the space the children are in.
+  const content = resolveSize(overlay, {});
   const clone = overlay.cloneNode(true) as SVGSVGElement;
-  clone.setAttribute('xmlns', SVG_NS);
-  clone.setAttribute('xmlns:xlink', XLINK_NS);
   clone.setAttribute('width', String(width));
   clone.setAttribute('height', String(height));
   clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  clone.setAttribute('style', 'display:block;overflow:hidden');
+  // Wholesale, not `removeAttribute`: this wipes the live root's `position:absolute; inset:0;
+  // width:100%; height:100%` (src/render.ts), and `width:100%` would beat the width attribute above.
+  clone.setAttribute('style', 'display:block');
   clone.removeAttribute('data-viewleader-overlay');
   removeConstructionGeometry(clone);
   replaceEmbeddedHtml(clone);
   prepareMarkdownImages(clone);
-  prependComposition(clone, width, height, options);
+  // ponytail: `overflow:visible` lets a label that overhangs the drawing survive into the sheet.
+  // Browsers honour it on a nested viewport; librsvg and resvg are spotty, and the raster path
+  // clips at the sheet edge regardless. Clip deliberately with `preserveAspectRatio: 'xMidYMid
+  // slice'` if a hard crop is what you want.
+  const frame = createSvg(clone.ownerDocument, 'svg') as SVGSVGElement;
+  frame.setAttribute('x', '0');
+  frame.setAttribute('y', '0');
+  frame.setAttribute('width', String(width));
+  frame.setAttribute('height', String(height));
+  frame.setAttribute('viewBox', `0 0 ${content.width} ${content.height}`);
+  frame.setAttribute('preserveAspectRatio', options.preserveAspectRatio ?? 'xMidYMid meet');
+  frame.setAttribute('style', 'overflow:visible');
+  frame.append(...clone.childNodes);
+  clone.append(frame);
+  prependComposition(clone, frame, { width, height }, content, options);
   appendTitleBlock(clone, width, height, options.titleBlock);
   const Serializer = clone.ownerDocument.defaultView?.XMLSerializer ?? globalThis.XMLSerializer;
-  const svg = Serializer ? new Serializer().serializeToString(clone) : clone.outerHTML;
-  return { svg, width, height };
+  if (Serializer) return { svg: new Serializer().serializeToString(clone), width, height };
+  // Only on the fallback path. `XMLSerializer` writes the declarations itself, from the elements'
+  // real namespaces — an `xmlns` set by hand is an ordinary attribute to it, so it lands a second
+  // time and the file is a duplicate-attribute XML parse error. HTML serialization writes none of
+  // them, so there they have to be spelled out.
+  clone.setAttribute('xmlns', SVG_NS);
+  clone.setAttribute('xmlns:xlink', XLINK_NS);
+  return { svg: clone.outerHTML, width, height };
 }
 
 export interface RasterSheetResult {
@@ -224,6 +288,18 @@ export interface RasterSheetResult {
   readonly height: number;
 }
 
+/**
+ * Rasterizes a sheet from {@link exportVectorSheet} to a PNG blob. Browser only — it needs a real
+ * `<canvas>`, and throws directing you back to vector export where there is none.
+ *
+ * **This does not taint the canvas**, so `toBlob` succeeds even with an underlay. The sheet is
+ * loaded from a same-origin `blob:` URL, and a `data:` URI *inside* an SVG is not an external
+ * fetch; what would taint it is an `http(s):` underlay, which is why `underlayDataUrl` takes a
+ * `data:` URI.
+ *
+ * `scale` multiplies both dimensions — pass `devicePixelRatio` for a screen-sharp image, or 300/96
+ * for something near print resolution.
+ */
 export async function rasterizeVectorSheet(
   sheet: VectorSheetResult,
   scale = 1,

@@ -44,3 +44,26 @@ describe('viewleader export allowlist', () => {
     expect(declarations).not.toMatch(/\b(?:WebGLRenderer|THREE|IFC)\b/u);
   });
 });
+
+describe('published package metadata', () => {
+  // Not vanity fields: without them npm renders the page with no repository link, no readme link and
+  // no "report an issue", and a consumer looking at a 0.0.1-beta package has nowhere to go.
+  it('points npm at the repository, the issue tracker, and ships the changelog', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as {
+      homepage?: string;
+      repository?: { url?: string };
+      bugs?: { url?: string };
+      files?: readonly string[];
+    };
+
+    expect(manifest.repository?.url).toBe('git+https://github.com/hr-shahriari/ViewLeader.git');
+    expect(manifest.homepage).toBe('https://github.com/hr-shahriari/ViewLeader#readme');
+    expect(manifest.bugs?.url).toBe('https://github.com/hr-shahriari/ViewLeader/issues');
+    // npm's packlist re-includes readme, license and copying whatever `files` says, but not a
+    // changelog. Left out, CHANGELOG.md is simply absent from node_modules/viewleader — which is
+    // the same "the answer exists but not where anyone reads it" failure the changelog is for.
+    expect(manifest.files).toContain('CHANGELOG.md');
+  });
+});

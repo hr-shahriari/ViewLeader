@@ -255,7 +255,11 @@ export {
  * still get usable numbers.
  */
 export { measureText, type FontSpec } from './textMetrics.js';
-/** The font used when a style does not name one. Measure against this to match what gets drawn. */
+/**
+ * The font text is measured in. Every built-in style names one already — the theme's `fontStack`,
+ * which this is — so it is not a fallback for un-styled text; it is the family {@link measureText}
+ * assumes when a caller passes none. Measure against it to match what gets drawn.
+ */
 export { DEFAULT_FONT_FAMILY } from './content.js';
 
 /**

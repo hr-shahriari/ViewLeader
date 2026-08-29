@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `viewleader` — an engine-neutral SVG annotation / leader-line overlay for 3D model viewers. The
 library owns label placement and leader routing; the host viewer keeps owning the camera and the
-model. Published as one npm package with five entry points (`.`, `/three`, `/react`, `/vue`,
-`/markdown`). The `demo/` workspace is both the example gallery and the fixture source for the
-grading tests.
+model. Published as one npm package with six entry points (`.`, `/three`, `/react`, `/vue`,
+`/markdown`, `/interchange`). The `demo/` workspace is both the example gallery and the fixture
+source for the grading tests.
 
 ## Commands
 
 ```bash
-npm run build            # tsup → dist/ (five entries, ESM + .d.ts)
+npm run build            # tsup → dist/ (six entries, ESM + .d.ts)
 npm run typecheck        # tsc --noEmit for src+test, then for demo. There is no ESLint — this is the lint.
 npm test                 # vitest run (unit + integration)
 npm run test:watch

@@ -1,5 +1,5 @@
 import { measureText, type FontSpec } from './textMetrics.js';
-import { CAP_RATIO } from './theme.js';
+import { CAP_RATIO, FONT_STACK } from './theme.js';
 import type { BuiltInContent, TextAlign, TextDirection } from './types.js';
 
 // Turns a note, callout, tag or symbol into the shapes and text runs that get drawn.
@@ -7,7 +7,14 @@ import type { BuiltInContent, TextAlign, TextDirection } from './types.js';
 // This is the measuring stage: it decides how big each label is and where every line of text sits
 // inside it. The renderer draws exactly what comes out of here and never measures anything itself,
 // so a label's size is decided once and stays consistent between layout and drawing.
-export const DEFAULT_FONT_FAMILY = 'Inter, "Noto Sans", Arial, sans-serif';
+/**
+ * The font measuring assumes, which is the theme's — the same string, not a copy of it. Held
+ * apart they drifted to `'Noto Sans'` here against `'Roboto Condensed'` there, so text was
+ * measured in one face and drawn in another.
+ *
+ * Annotated `: string` so the value is not shipped as a public literal type.
+ */
+export const DEFAULT_FONT_FAMILY: string = FONT_STACK;
 export const DEFAULT_FONT_SIZE = 14;
 /** Spacing between lines, measured at {@link DEFAULT_FONT_SIZE} and scaled with the text. */
 export const LINE_HEIGHT = 18;
