@@ -74,7 +74,15 @@ interface LastWrite {
   width: string | undefined;
   height: string | undefined;
   hidden: boolean;
-  fontFamily: string | undefined;
+  /**
+   * A signature of every metric written, not just the family.
+   *
+   * Guarding on the family alone left `--vl-font-size`, `--vl-line-height`, `--vl-text-color` and
+   * `--vl-padding` written once and never again — so an annotative-scale change, a font-size write
+   * or a theme swap left the inline editor sitting at the old size on a relaid-out label, which is
+   * exactly the glyph-jump these variables exist to prevent.
+   */
+  metrics: string | undefined;
 }
 
 /**
@@ -258,8 +266,8 @@ function applyResolved(element: Element, resolved: Resolved, last: LastWrite | u
   const transform = `translate(${resolved.at.x}px, ${resolved.at.y}px)`;
   const width = resolved.width === undefined ? undefined : `${resolved.width}px`;
   const height = resolved.height === undefined ? undefined : `${resolved.height}px`;
-  const fontFamily = resolved.text?.fontFamily;
-  const next: LastWrite = { transform, width, height, hidden: false, fontFamily };
+  const metrics = resolved.text === undefined ? undefined : metricsSignature(resolved.text);
+  const next: LastWrite = { transform, width, height, hidden: false, metrics };
   if (style === undefined) return next;
 
   // Every write is guarded, which is what makes running this unconditionally every frame cheap.
@@ -275,7 +283,7 @@ function applyResolved(element: Element, resolved: Resolved, last: LastWrite | u
   // Text metrics ride as custom properties so a host stylesheet consumes them with `var()` and no
   // JavaScript reads anything back — Radix's pattern for `--radix-popper-available-*`. An inline
   // editor needs these to sit on the text it is replacing without the glyphs jumping.
-  if (resolved.text !== undefined && last?.fontFamily !== fontFamily) {
+  if (resolved.text !== undefined && last?.metrics !== metrics) {
     style.setProperty('--vl-font-family', resolved.text.fontFamily);
     style.setProperty('--vl-font-size', `${resolved.text.fontSize}px`);
     style.setProperty('--vl-line-height', `${resolved.text.lineHeight}px`);
@@ -297,13 +305,18 @@ function applyHidden(element: Element, last: LastWrite | undefined): LastWrite {
     width: last?.width,
     height: last?.height,
     hidden: true,
-    fontFamily: last?.fontFamily,
+    metrics: last?.metrics,
   };
   if (style === undefined || last?.hidden === true) return next;
   style.setProperty('visibility', 'hidden');
   style.setProperty('pointer-events', 'none');
   element.setAttribute('data-vl-follow', 'offscreen');
   return next;
+}
+
+/** Every value written as a custom property, so a change to any one of them is noticed. */
+function metricsSignature(text: NonNullable<Resolved['text']>): string {
+  return `${text.fontFamily}|${text.fontSize}|${text.lineHeight}|${text.textColor}|${text.padding}`;
 }
 
 function setOrClear(style: CSSStyleDeclaration, property: string, value: string | undefined): void {

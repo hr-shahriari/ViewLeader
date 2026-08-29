@@ -305,6 +305,7 @@ export class ViewLeader {
   readonly #runtime: ViewLeaderRuntime;
   readonly #authoring: AuthoringController;
   readonly #editing: EditingController;
+  readonly #boundary: Element;
   readonly #markup: MarkupAuthoringCapability;
   readonly #pluginAuthoring: PluginAuthoringController;
   readonly #extensions: ExtensionRuntime;
@@ -318,6 +319,7 @@ export class ViewLeader {
     if (!isElement(options.boundary)) {
       throw new InvalidConfigurationError('boundary must be a DOM Element');
     }
+    this.#boundary = options.boundary;
     this.#document = new DocumentEngine({
       ...(options.historyCapacity === undefined ? {} : { historyCapacity: options.historyCapacity }),
       ...(options.documentLimits === undefined ? {} : { limits: options.documentLimits }),
@@ -626,6 +628,21 @@ export class ViewLeader {
    * Read it, do not write it — the frame loop owns every child, and anything added here is gone by
    * the next render.
    */
+  /**
+   * The element this instance was built for — the one the viewer draws into.
+   *
+   * Anything mounting host chrome inside the viewer needs it: to normalize a pointer against its
+   * bounding rect, or to reach `ownerDocument` for a listener. Deriving it from
+   * {@link overlayElement} happens to work, since the overlay is a child, but that is a coincidence
+   * of the render tree rather than a promise — so it is published.
+   *
+   * Read it, do not reparent it.
+   */
+  public get boundary(): Element {
+    this.#assertActive();
+    return this.#boundary;
+  }
+
   public get overlayElement(): SVGSVGElement {
     this.#assertActive();
     return this.#runtime.overlay;

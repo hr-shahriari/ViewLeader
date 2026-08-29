@@ -157,6 +157,27 @@ describe('the follow registry', () => {
     registry.dispose();
   });
 
+  it('updates every text metric, not only the family', () => {
+    // Guarding on the family alone left an inline editor at the old size after an annotative-scale
+    // change or a font-size write — the glyph-jump these variables exist to prevent.
+    const { registry, frame, setGeometry } = harness();
+    const element = div();
+    registry.ref({ kind: 'label', id: 'n' })(element);
+    frame();
+    expect(element.style.getPropertyValue('--vl-font-size')).toBe('14px');
+
+    const bigger = geometry({ x: 100, y: 200, width: 80, height: 30 });
+    setGeometry({
+      ...bigger,
+      text: { ...bigger.text, fontSize: 24, lineHeight: 30, textColor: '#f00' },
+    });
+    frame();
+    expect(element.style.getPropertyValue('--vl-font-size')).toBe('24px');
+    expect(element.style.getPropertyValue('--vl-line-height')).toBe('30px');
+    expect(element.style.getPropertyValue('--vl-text-color')).toBe('#f00');
+    registry.dispose();
+  });
+
   it('follows an ink point through its own geometry', () => {
     const { registry, frame } = harness();
     const element = div();
