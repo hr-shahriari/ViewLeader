@@ -9,6 +9,7 @@
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
     "noEmit": true,
     "skipLibCheck": true,
     "types": ["node"]

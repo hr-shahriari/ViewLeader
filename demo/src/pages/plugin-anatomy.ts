@@ -1,5 +1,5 @@
 // Plugin content is stored as canonical bytes ViewLeader itself never interprets. Without the plugin
-// installed the record is preserved losslessly (and shown as a safe placeholder); reinstall the plugin
+// installed the record is preserved losslessly but nothing draws it; reinstall the plugin
 // and the exact same bytes become renderable again. This page rebuilds the runtime both ways.
 import { ViewLeader } from 'viewleader';
 import { markdownPlugin } from 'viewleader/markdown';
@@ -63,7 +63,7 @@ try {
   const bar = createControlBar();
   bar.button('Remove plugin', () => {
     rebuild(false, documentBytes);
-    bar.status('Plugin removed — the Markdown record is preserved, shown as a placeholder.');
+    bar.status('Plugin removed — the record is preserved byte-for-byte in the document, but nothing draws it: with no renderer installed the annotation is skipped for the frame and the viewport is empty.');
   });
   bar.button('Restore plugin', () => {
     rebuild(true, documentBytes);

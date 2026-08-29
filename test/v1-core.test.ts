@@ -591,6 +591,54 @@ describe('fresh v1 core vertical slice', () => {
     expect(overlay?.textContent).toContain('العربية');
     leader.dispose();
   });
+
+  it('forwards a wheel swallowed by a label to a canvas beside the boundary, once', () => {
+    const root = boundary();
+    // The read-only shape: the boundary is a sibling div over the canvas, so a wheel that lands on
+    // a label never reaches the canvas on its own.
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    const delivered: WheelEvent[] = [];
+    canvas.addEventListener('wheel', (event) => delivered.push(event as WheelEvent));
+    const leader = new ViewLeader({ boundary: root, adapters: adapters(), forwardWheelTo: canvas });
+    leader.annotations.create(note('a1'));
+    leader.update();
+
+    const label = root.querySelector('[data-hit-target="label"]');
+    expect(label).not.toBeNull();
+    const swallowed = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 });
+    label!.dispatchEvent(swallowed);
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]!.deltaY).toBe(120);
+    // Prevented as well as forwarded: the page must not scroll behind the viewer.
+    expect(swallowed.defaultPrevented).toBe(true);
+
+    leader.dispose();
+    // Dispatched on the boundary itself — the overlay, and the label with it, is gone after
+    // dispose, so nothing but a still-registered listener could forward this one.
+    root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 }));
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('does not re-deliver a wheel that already passed through a canvas inside the boundary', () => {
+    const root = boundary();
+    // The shape the README documents: the canvas is the boundary's own child, so a wheel on the
+    // canvas bubbles up to the overlay's listener having already been delivered. Forwarding it
+    // again would dispatch it back onto the canvas, which bubbles up here again — recursion, not a
+    // double count, which is why the guard reads the composed path rather than the event's target.
+    const canvas = document.createElement('canvas');
+    root.appendChild(canvas);
+    const delivered: WheelEvent[] = [];
+    canvas.addEventListener('wheel', (event) => delivered.push(event as WheelEvent));
+    const leader = new ViewLeader({ boundary: root, adapters: adapters(), forwardWheelTo: canvas });
+    leader.update();
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 }));
+
+    expect(delivered).toHaveLength(1);
+    leader.dispose();
+  });
 });
 
 function elementAnchor(modelId: string, elementId: string, fallbackPoint: { x: number; y: number; z: number }): Anchor {

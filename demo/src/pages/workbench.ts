@@ -4,6 +4,7 @@
 import { ViewLeader, type NeutralViewerState, type ViewerStateAdapter } from 'viewleader';
 import { markdownPlugin } from 'viewleader/markdown';
 import { createThreeAdapter } from 'viewleader/three';
+import { exportVectorSheet } from 'viewleader/interchange';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
@@ -111,6 +112,7 @@ try {
     leader.annotations.select(['note']);
     leader.update();
     compose.disabled = true;
+    sheet.disabled = false;
     bar.status(
       `Composed: ${leader.annotations.getSnapshot().annotations.length} annotations, ` +
         `${leader.authoring.markup.listInk().length} ink, ${leader.views.getSnapshot().savedViews.length} saved view, ` +
@@ -128,6 +130,7 @@ try {
     }
     leader.update();
     crowd.disabled = true;
+    sheet.disabled = false;
   });
 
   // `occlusion` is a per-annotation field, so a page-wide policy means touching every annotation.
@@ -174,6 +177,27 @@ try {
     }
   }));
 
+  // One host-side call, which is why the library ships no `exportSheet()` method. The chrome is
+  // already gone: `render.ts` marks grips, hit pads and handle groups `data-non-printing` where it
+  // creates them, and `removeConstructionGeometry` strips that on the way out.
+  const sheet = bar.button('Export sheet', () => {
+    const { svg, width, height } = exportVectorSheet(leader.overlayElement, {
+      paper: '#ffffff',
+      titleBlock: { drawingNumber: 'A-101', scale: 'NTS', date: new Date().toISOString().slice(0, 10) },
+    });
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'workbench.svg';
+    link.click();
+    // Revoked on the next tick, not inline: the download reads the blob after `click()` returns.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    bar.status(`Exported ${width}×${height} — drawing only: no grips, no hit geometry.`);
+  });
+  // Off until one of the create buttons has drawn a frame: `exportVectorSheet` reads the overlay's
+  // rendered SVG, and there is nothing in it — so nothing to export — until an annotation exists.
+  sheet.disabled = true;
+
   bar.button('Dispose', () => {
     // Stop the frame work FIRST. `dispose()` makes every capability throw, and these two callbacks
     // run from the harness render loop — one throw there and the renderer never paints again.
@@ -182,6 +206,7 @@ try {
     compose.disabled = true;
     crowd.disabled = true;
     badge.disabled = true;
+    sheet.disabled = true;
     bar.status('Disposed — no ViewLeader-owned resources remain in the boundary.');
   });
   bar.status('One runtime, many capabilities. Compose a review, then dispose it.');

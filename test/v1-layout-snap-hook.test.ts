@@ -260,7 +260,11 @@ describe('strategies.snap — hysteresis (no placement jitter)', () => {
 });
 
 describe('strategies.snap — the ticket-01 label drag', () => {
-  it('the drag preview and the committed position are the same snapped point', () => {
+  // What this pins is a drop-time equality: the point the preview drew and the point the commit
+  // stored are the same snapped point. It is only a drop-time claim now that a drag stores its
+  // anchor — on any later frame the label is re-measured against that anchor and drifts off the
+  // host's grid as the camera moves, which `#applyLayoutSnap` documents as deliberate.
+  it('the drag preview and the committed position are the same snapped point at drop', () => {
     const leader = makeLeader({
       snap: (p) => ({ x: Math.round(p.x / 50) * 50, y: Math.round(p.y / 50) * 50 }),
     });
@@ -275,7 +279,11 @@ describe('strategies.snap — the ticket-01 label drag', () => {
 
     leader.editing.pointerUp(at(561, 417));
     const committed = leader.annotations.get('a1')!.placement;
-    expect(committed).toEqual({ kind: 'manual', position: { x: previewed.x, y: previewed.y } });
+    expect(committed).toEqual({
+      kind: 'manual',
+      position: { x: previewed.x, y: previewed.y },
+      anchor: { x: 400, y: 300 },
+    });
     leader.dispose();
   });
 
@@ -291,6 +299,7 @@ describe('strategies.snap — the ticket-01 label drag', () => {
     expect(leader.annotations.get('a1')!.placement).toEqual({
       kind: 'manual',
       position: { x: 550, y: 410 },
+      anchor: { x: 400, y: 300 },
     });
     expect(leader.diagnostics.getSnapshot()).toContainEqual(expect.objectContaining({
       code: 'SNAP_STRATEGY_FAILED',

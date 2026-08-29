@@ -1,6 +1,8 @@
+/** @vitest-environment jsdom */
 import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
 import { DocumentEngine } from '../src/document.js';
+import { ViewLeader, type HostAdapterBundle } from '../src/index.js';
 import {
   exportVectorSheet,
   mergeIdentifiedDocuments,
@@ -207,14 +209,12 @@ describe('M9 standalone sheet export', () => {
     overlay.innerHTML = [
       '<g data-annotation-id="a" data-selected="true">',
       '<path class="viewleader-route" d="M0 0 L20 20" data-dash-animation="1" style="animation: dash 1s"/>',
-      '<path class="viewleader-route-hit" d="M0 0 L20 20"/>',
       '<path data-occluded-dash="true" d="M2 2 L4 4" stroke-dasharray="2 2"/>',
       '<g data-occlusion-faded="true" opacity="0.2"><text>Visible ink</text></g>',
       '<foreignObject data-embedded-html x="10" y="10"></foreignObject>',
       '<image data-markdown-image data-export-safe="true" data-export-source="data:image/png;base64,AA==" x="0" y="0" width="20" height="20"/>',
       '<image data-markdown-image data-export-safe="false" data-alt="screen" x="30" y="0" width="20" height="20"/>',
       '</g>',
-      '<g class="viewleader-guide"><path d="M0 0"/></g>',
       '<g hidden><text>Hidden</text></g>',
     ].join('');
     document.body.append(overlay);
@@ -231,8 +231,6 @@ describe('M9 standalone sheet export', () => {
     });
     expect(overlay.outerHTML).toBe(before);
     expect(sheet).toMatchObject({ width: 800, height: 500 });
-    expect(sheet.svg).not.toContain('viewleader-route-hit');
-    expect(sheet.svg).not.toContain('viewleader-guide');
     expect(sheet.svg).not.toContain('data-selected');
     expect(sheet.svg).not.toContain('data-dash-animation');
     expect(sheet.svg).not.toContain('Hidden');
@@ -242,7 +240,87 @@ describe('M9 standalone sheet export', () => {
     expect(sheet.svg).toContain('data:image/png;base64,AA==');
     expect(sheet.svg).toContain('data-export-placeholder="markdown-image"');
     expect(sheet.svg).toContain('data-title-block');
-    expect(sheet.svg.indexOf('fill="#fff"')).toBeLessThan(sheet.svg.indexOf('preserveAspectRatio'));
+    // Paper first, then the drawing on top of it. Indexed on `<image>` rather than on
+    // `preserveAspectRatio`, which now also appears on the root's content frame — and root
+    // attributes serialize before any child.
+    expect(sheet.svg.indexOf('fill="#fff"')).toBeLessThan(sheet.svg.indexOf('<image'));
+  });
+
+  // Graded through the real renderer rather than a hand-written fixture, because the bug was
+  // precisely that the strip list in sheet.ts and the attributes render.ts emits had drifted apart.
+  // A fixture written from the strip list can only ever agree with itself.
+  it('strips the interface the renderer actually draws, and keeps the drawing', () => {
+    const boundary = document.createElement('div');
+    document.body.append(boundary);
+    const adapters: HostAdapterBundle = {
+      projection: {
+        getViewport: () => ({ width: 800, height: 600, devicePixelRatio: 1 }),
+        project: (point) => ({
+          point: { x: 400 + point.x * 10, y: 300 - point.y * 10 },
+          depth: point.z,
+          visible: true,
+        }),
+      },
+    };
+    const leader = new ViewLeader({ boundary, adapters });
+    leader.annotations.create({
+      id: 'a',
+      anchor: { kind: 'world-point', point: { x: 0, y: 0, z: 0 } },
+      content: { kind: 'callout', text: 'Note' },
+      placement: { kind: 'manual', position: { x: 380, y: 100 } },
+    });
+    leader.update();
+    // Select, then render again. `runtime.select()` calls `overlay.setSelection` before
+    // `#annotationGroups` holds the new annotation, so create-select-render leaves `aria-pressed`
+    // set but never adds `viewleader-selected` — and the selected state would go ungraded.
+    leader.annotations.select(['a']);
+    leader.update();
+
+    const overlay = leader.overlayElement;
+    // The fixture is only worth anything if the live overlay has the chrome to begin with.
+    expect(overlay.querySelector('[data-handle], [data-route-handles]')).not.toBeNull();
+    expect(overlay.querySelector('.viewleader-selected')).not.toBeNull();
+
+    const sheet = exportVectorSheet(overlay);
+    const parsed = new DOMParser().parseFromString(sheet.svg, 'image/svg+xml');
+    expect(parsed.querySelector(
+      '[data-non-printing], [data-handle], [data-route-handles], [data-region-handles], .viewleader-selected',
+    )).toBeNull();
+    // The other half, and the trap: the label group *is* `data-hit-target="label"` and carries the
+    // text. Widening any selector to a bare `[data-hit-target]` empties the drawing.
+    expect(parsed.querySelector('text')?.textContent).toBe('Note');
+    leader.dispose();
+    boundary.remove();
+  });
+
+  it('fits the drawing into a differently-proportioned sheet without re-labelling its coordinates', () => {
+    const { overlay } = fixture();
+    const sheet = exportVectorSheet(overlay, {
+      width: 1191,
+      height: 842,
+      paper: '#fff',
+      underlayDataUrl: 'data:image/png;base64,AA==',
+      titleBlock: { drawingNumber: 'A-101', scale: '1:100', date: '2026-07-19' },
+    });
+    expect(sheet).toMatchObject({ width: 1191, height: 842 });
+    const parsed = new DOMParser().parseFromString(sheet.svg, 'image/svg+xml');
+    // A sheet no XML parser will open is not an export. Spelling `xmlns` out by hand *and* letting
+    // `XMLSerializer` write its own is a duplicate attribute, which is a hard error, not a warning.
+    expect(parsed.querySelector('parsererror')).toBeNull();
+    const frame = parsed.documentElement.querySelector('svg')!;
+    // Content space: the children were laid out in the overlay's 800×500 and keep those numbers.
+    expect(frame.getAttribute('viewBox')).toBe('0 0 800 500');
+    expect(frame.getAttribute('preserveAspectRatio')).toBe('xMidYMid meet');
+    expect(frame.getAttribute('width')).toBe('1191');
+    const underlay = frame.firstElementChild!;
+    expect(underlay.tagName).toBe('image');
+    expect(underlay.getAttribute('width')).toBe('800');
+    expect(underlay.getAttribute('height')).toBe('500');
+    expect(underlay.getAttribute('preserveAspectRatio')).toBe('none');
+    // Sheet space, and the assertion that fails the moment the two spaces are collapsed into one:
+    // the paper fills the paper, and the title block keeps its authored 12px at a sheet-space y.
+    expect(sheet.svg).toMatch(/<rect[^>]*width="1191"[^>]*height="842"[^>]*fill="#fff"/u);
+    expect(sheet.svg).toMatch(/y="774"[^>]*font-size="12"/u);
   });
 
   it('fails clearly before a frame and directs unsupported raster users to vector export', async () => {

@@ -3,12 +3,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CAD_DARK,
+  CAD_PAPER,
   ViewLeader,
   type AnnotationDraft,
   type HostAdapterBundle,
   type StyleDefinition,
   type Theme,
 } from '../src/index.js';
+import { DEFAULT_FONT_FAMILY } from '../src/content.js';
+import { defaultRenderStyle } from '../src/render.js';
 
 const adapters: HostAdapterBundle = {
   projection: {
@@ -34,7 +37,13 @@ function makeLeader(theme?: Theme): { leader: ViewLeader; root: HTMLDivElement }
   };
 }
 
-/** An annotation naming no style at all, so it falls back. */
+/**
+ * An annotation naming no style at all.
+ *
+ * It does NOT reach the fallback style: `resolveStyleById` reads a missing id as
+ * `builtin.style.standard`, so this is the shipped standard style. Only an id no definition
+ * provides gets `defaultRenderStyle`, and the facade refuses to store one.
+ */
 function unstyled(id: string): AnnotationDraft {
   return {
     id,
@@ -148,5 +157,38 @@ describe('the fallback style follows the theme', () => {
       ?? root.querySelector('svg[data-viewleader-overlay] > rect');
     expect(marquee?.getAttribute('stroke')).toBe(CAD_DARK.ink);
     leader.dispose();
+  });
+});
+
+describe('the shipped font stack', () => {
+  it('draws in the theme\'s stack, and that stack downloads nothing', () => {
+    const { leader, root } = makeLeader();
+    leader.annotations.create(unstyled('a1'));
+    leader.update();
+
+    const drawn = root.querySelector('[data-annotation-id="a1"] text')!.getAttribute('font-family');
+    expect(drawn).toBe(CAD_PAPER.fontStack);
+    // The measuring side has to name the same string, or text is sized in one face and painted in
+    // another — which is how `'Noto Sans'` and `'Roboto Condensed'` ended up in the same drawing.
+    expect(drawn).toBe(DEFAULT_FONT_FAMILY);
+    // Every name in it must already be on the machine. A `blob:`-loaded sheet fetches no webfont,
+    // so anything downloadable resolves on screen and falls through in the PNG. Plain `/Roboto/i`
+    // on purpose: `Roboto Condensed` is the exact face that was in here.
+    expect(drawn).not.toMatch(/Inter|Roboto|Noto|Open Sans|Lato|Source Sans/iu);
+    leader.dispose();
+  });
+
+  it('carries a custom theme into the fallback style, not just into the built-ins', () => {
+    // `defaultRenderStyle` is the style for anything naming none — a plugin's preview, the chrome,
+    // an annotation whose styleId no longer resolves. It hard-coded `DEFAULT_FONT_FAMILY` while
+    // every built-in read `theme.fontStack`, so a host that set its own stack got it everywhere
+    // except here.
+    //
+    // Asserted against the function rather than the DOM because the facade guards both doors into
+    // an unresolvable styleId: `annotations.create` throws NotFoundError and `documents.replace`
+    // throws InvalidDocumentError, so no drawn `<text>` can reach it from out here.
+    const theme: Theme = { ...CAD_PAPER, fontStack: "'Fixture Grotesk', sans-serif" };
+    expect(defaultRenderStyle(theme).fontFamily).toBe(theme.fontStack);
+    expect(defaultRenderStyle().fontFamily).toBe(CAD_PAPER.fontStack);
   });
 });

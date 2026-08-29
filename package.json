@@ -2,12 +2,35 @@
   "name": "viewleader",
   "version": "0.0.1-beta.0",
   "description": "Engine-neutral SVG annotation and leader-line overlay for 3D model viewers",
+  "keywords": [
+    "annotation",
+    "leader-line",
+    "callout",
+    "svg",
+    "overlay",
+    "label-placement",
+    "3d",
+    "viewer",
+    "three",
+    "bim",
+    "ifc",
+    "bcf"
+  ],
+  "homepage": "https://github.com/hr-shahriari/ViewLeader#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hr-shahriari/ViewLeader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hr-shahriari/ViewLeader/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "exports": {
@@ -30,6 +53,10 @@
     "./markdown": {
       "types": "./dist/markdown.d.ts",
       "import": "./dist/markdown.js"
+    },
+    "./interchange": {
+      "types": "./dist/interchange.d.ts",
+      "import": "./dist/interchange.js"
     },
     "./package.json": "./package.json"
   },

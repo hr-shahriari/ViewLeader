@@ -120,16 +120,22 @@ export interface EditingOptions {
    */
   readonly gestures?: boolean;
   /**
-   * When a press on empty space starts a rubber-band selection. `'empty-space'` (the default) is
-   * every plain left-press; `'modifier'` is a shift- or alt-press only — the same two modifiers the
-   * marquee already reads to add to or remove from the selection — so a plain drag falls through
-   * and does nothing; `'none'` never marquees.
+   * When a press on empty space starts a rubber-band selection. `'empty-space'` is every plain
+   * left-press; `'modifier'` is a shift- or alt-press only — the same two modifiers the marquee
+   * already reads to add to or remove from the selection — so a plain drag falls through and does
+   * nothing; `'none'` never marquees.
    *
-   * Needed because starting a marquee takes the interaction lease, and a host that wires that lease
-   * to its camera controls loses left-drag orbit on every press that misses an annotation. With no
-   * way to decline, such a host has to unbind its own left button instead — which is how both
-   * editing examples ended up with no left-drag orbit and, after reassigning the right button to
-   * get it back, no pan either.
+   * The default is `'empty-space'`, except when the host supplied an interaction adapter, where it
+   * is `'none'`. Starting a marquee takes the interaction lease, and the motivating case for that
+   * adapter is camera controls: a host that wires the lease to its controls loses left-drag orbit
+   * on every press that misses an annotation. With no way to decline, such a host has to unbind its
+   * own left button instead — which is how both editing examples ended up with no left-drag orbit
+   * and, after reassigning the right button to get it back, no pan either.
+   *
+   * The test is whether the adapter exists, not what the host does with the lease — core also
+   * acquires it for authoring. A host that supplies `interaction` purely so its own input stands
+   * down during a pick therefore loses the rubber band too, and gets it back by asking for
+   * `'empty-space'` explicitly.
    */
   readonly marquee?: 'empty-space' | 'modifier' | 'none';
 }
@@ -236,7 +242,10 @@ export class EditingController {
     this.#markup = options.markup;
     this.#toolActive = options.toolActive;
     this.#gestures = options.editing?.gestures === true;
-    this.#marqueeMode = options.editing?.marquee ?? 'empty-space';
+    // Default off when the host supplied an interaction adapter: a marquee takes the lease, and
+    // the adapter's motivating case is camera controls. See `EditingOptions.marquee`.
+    this.#marqueeMode = options.editing?.marquee
+      ?? (options.runtime.adapters.interaction === undefined ? 'empty-space' : 'none');
     this.#documentUnsubscribe = options.document.subscribe((commit) => {
       // The document has been replaced underneath the drag, and the annotation being dragged may
       // not exist any more. There is nowhere for it to land, so the gesture is abandoned.
@@ -727,9 +736,14 @@ export class EditingController {
     }
     try {
       // A single update is a single history entry, so a whole drag undoes in one go.
+      //
+      // Stored against the anchor it was dropped beside, not as a bare screen point: the durable
+      // half of "put this callout here" is its distance from the thing it points at, and a raw
+      // screen pin leaves it beside a different pipe the moment the camera turns. The live
+      // preview stays absolute — during a drag the pointer *is* a screen point.
       this.#document.update(
         active.id,
-        { placement: { kind: 'manual', position } },
+        { placement: this.#runtime.placementAt(active.id, position) },
         'Move annotation',
       );
     } finally {

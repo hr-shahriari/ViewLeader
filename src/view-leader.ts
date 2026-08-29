@@ -82,6 +82,25 @@ import type {
 } from './types.js';
 
 export interface ViewLeaderOptions {
+  /**
+   * The element the overlay is appended to, and the frame every pointer position is measured
+   * against.
+   *
+   * It has to cover the same rectangle your projection adapter reports as the viewport. The overlay
+   * mounts as `position: absolute; inset: 0`, so the boundary needs to establish a positioning
+   * context, and a pointer is normalized against its bounding rect — a boundary offset from the
+   * canvas offsets every annotation by exactly that much.
+   *
+   * *Which* element depends on whether core listens for pointer events itself:
+   *
+   * - Read-only overlay (the default, `editing.gestures` off) — a sibling `div` over the canvas with
+   *   `pointer-events: none`, so the overlay never swallows an orbit drag. Annotations that need
+   *   clicking re-enable events on themselves.
+   * - `editing.gestures: true` — the viewport element itself, the one that already receives pointer
+   *   events. Core attaches its listeners to the boundary, and a `pointer-events: none` boundary
+   *   receives nothing except what bubbles up from an annotation's own hit target: a press on empty
+   *   space would never arrive, and a drag would end the moment the pointer left the label.
+   */
   readonly boundary: Element;
   readonly adapters: HostAdapterBundle;
   readonly initialDocument?: string | ViewLeaderDocument;
@@ -90,6 +109,16 @@ export interface ViewLeaderOptions {
   readonly plugins?: readonly PluginDescriptor[];
   readonly selfDrive?: boolean;
   readonly editing?: EditingOptions;
+  /**
+   * An element that wheel events over the overlay are re-dispatched to — the viewer's canvas, so
+   * scrolling to zoom keeps working while the pointer is over a label.
+   *
+   * Needed whenever something inside the overlay takes pointer events: a label's hit target
+   * swallows the wheel, and the canvas underneath never hears it. An event that already passed
+   * through this element on its own way up is left alone, so nothing is delivered twice when the
+   * canvas is a child of the boundary.
+   */
+  readonly forwardWheelTo?: Element;
   /** A hook for adjusting where a dragged label lands — snapping it to a grid or a guide. */
   readonly strategies?: LayoutStrategies;
   /**
@@ -299,6 +328,7 @@ export class ViewLeader {
         document: this.#document,
         extensions: this.#extensions,
         ...(options.editing?.handles === undefined ? {} : { handles: options.editing.handles }),
+        ...(options.forwardWheelTo === undefined ? {} : { forwardWheelTo: options.forwardWheelTo }),
         ...(options.strategies === undefined ? {} : { strategies: options.strategies }),
         ...(options.theme === undefined ? {} : { theme: options.theme }),
       });
@@ -564,6 +594,19 @@ export class ViewLeader {
     return this.#runtime.annotationScale;
   }
 
+  /**
+   * The `<svg>` the overlay draws into. It exists from construction, so it is never `undefined` —
+   * but it holds nothing until the first {@link update}.
+   *
+   * This is what `exportVectorSheet` wants: `exportVectorSheet(vl.overlayElement, { paper: '#fff' })`.
+   * Read it, do not write it — the frame loop owns every child, and anything added here is gone by
+   * the next render.
+   */
+  public get overlayElement(): SVGSVGElement {
+    this.#assertActive();
+    return this.#runtime.overlay;
+  }
+
   public dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -601,7 +644,16 @@ export class ViewLeader {
       remove: (id: string) => { this.#assertActive(); return this.#document.remove(id); },
       move: (id: string, position: Vec2) => {
         this.#assertActive();
-        return this.#document.update(id, { placement: { kind: 'manual', position } }, 'Move annotation');
+        // Kind-preserving. An absolute point goes in either way, but a label that already follows
+        // its anchor keeps following it — otherwise a single arrow-key nudge silently undoes the
+        // drag that placed it (the gallery's own host-chrome page nudges exactly this way). One
+        // guard in the shared method beats one in every caller. Anything else — an automatic
+        // label, or a plain pin — still gets the plain pin this has always written.
+        const current = this.#document.get(id)?.placement;
+        const placement = current?.kind === 'manual' && current.anchor !== undefined
+          ? this.#runtime.placementAt(id, position)
+          : { kind: 'manual' as const, position };
+        return this.#document.update(id, { placement }, 'Move annotation');
       },
       retarget: (id: string, anchor: Anchor) => {
         this.#assertActive();

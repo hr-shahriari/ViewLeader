@@ -7,7 +7,6 @@
 // rebuilt, because throwing away and recreating a few hundred nodes sixty times a second is what
 // makes an overlay stutter during an orbit.
 import {
-  DEFAULT_FONT_FAMILY,
   DEFAULT_FONT_SIZE,
   DEFAULT_PADDING,
   LINE_HEIGHT,
@@ -879,6 +878,9 @@ export class SvgOverlay {
     if (primitives.length === 0 || this.#disposed) return;
     const group = this.#boundary.ownerDocument.createElementNS(SVG_NS, 'g');
     group.setAttribute('data-viewleader-plugin-preview', '');
+    // Chrome is marked `data-non-printing` where it is created, here; `removeConstructionGeometry`
+    // in src/interchange/sheet.ts strips it on export. Keep the marking here, not a selector there.
+    group.setAttribute('data-non-printing', '');
     group.setAttribute('role', 'img');
     group.setAttribute('aria-label', 'Plugin authoring preview');
     group.setAttribute('transform', 'translate(12 12)');
@@ -905,6 +907,7 @@ export class SvgOverlay {
     if (this.#marquee === undefined) {
       const marquee = this.#boundary.ownerDocument.createElementNS(SVG_NS, 'rect');
       marquee.setAttribute('data-viewleader-marquee', '');
+      marquee.setAttribute('data-non-printing', '');
       marquee.setAttribute('fill', 'none');
       marquee.setAttribute('stroke', this.#chrome.lineColor);
       marquee.setAttribute('stroke-width', format(this.#chrome.lineWidth));
@@ -962,6 +965,7 @@ export class SvgOverlay {
       hit.setAttribute('stroke', 'transparent');
       hit.setAttribute('stroke-width', '12');
       hit.setAttribute('data-hit-target', 'leader');
+      hit.setAttribute('data-non-printing', '');
       hit.dataset.legId = leg.id;
       hit.style.pointerEvents = 'stroke';
       this.#wireHitTarget(hit, entry.annotation.id);
@@ -986,6 +990,9 @@ export class SvgOverlay {
     hitRect.setAttribute('height', format(entry.layout.bounds.height + 8));
     hitRect.setAttribute('fill', 'transparent');
     hitRect.setAttribute('stroke', 'transparent');
+    // The pad, never the label group above it — that group is the drawing: text, enclosure and
+    // the transform that puts them where they belong.
+    hitRect.setAttribute('data-non-printing', '');
     label.appendChild(hitRect);
     for (const primitive of sortedPrimitives(entry.layout.primitives)) {
       label.appendChild(this.#renderPrimitive(primitive, entry.style, entry.annotation.id));
@@ -1032,6 +1039,7 @@ export class SvgOverlay {
     hit.setAttribute('stroke', 'transparent');
     hit.setAttribute('stroke-width', '12');
     hit.setAttribute('data-hit-target', 'ink');
+    hit.setAttribute('data-non-printing', '');
     hit.style.pointerEvents = 'stroke';
     hit.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -1093,6 +1101,7 @@ export class SvgOverlay {
   #renderGrip(entry: PlannedAnnotation, leg: PlannedLeg, index: number): SVGRectElement {
     const grip = this.#boundary.ownerDocument.createElementNS(SVG_NS, 'rect');
     grip.setAttribute('data-handle', 'anchor');
+    grip.setAttribute('data-non-printing', '');
     grip.dataset.legId = leg.id;
     grip.dataset.legIndex = String(index);
     grip.setAttribute('width', format(GRIP_SIZE));
@@ -1118,6 +1127,7 @@ export class SvgOverlay {
     const document = this.#boundary.ownerDocument;
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('data-route-handles', '');
+    group.setAttribute('data-non-printing', '');
     group.style.pointerEvents = 'none';
     const handles = annotationScreenGeometry([entry], entry.annotation.id)?.routeHandles ?? [];
     for (const handle of handles) {
@@ -1156,6 +1166,7 @@ export class SvgOverlay {
     const document = this.#boundary.ownerDocument;
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('data-region-handles', '');
+    group.setAttribute('data-non-printing', '');
     group.style.pointerEvents = 'none';
     const handles = annotationScreenGeometry([entry], entry.annotation.id)?.regionHandles ?? [];
     for (const handle of handles) {
@@ -1195,6 +1206,7 @@ export class SvgOverlay {
     const document = this.#boundary.ownerDocument;
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('data-ink-handles', '');
+    group.setAttribute('data-non-printing', '');
     group.style.pointerEvents = 'none';
     entry.points.forEach((point, index) => {
       const grip = document.createElementNS(SVG_NS, 'rect');
@@ -1268,6 +1280,7 @@ export class SvgOverlay {
     hit.setAttribute('stroke', 'transparent');
     hit.setAttribute('stroke-width', '12');
     hit.setAttribute('data-hit-target', 'region');
+    hit.setAttribute('data-non-printing', '');
     hit.dataset.legId = leg.id;
     hit.style.pointerEvents = 'stroke';
     this.#wireHitTarget(hit, annotationId);
@@ -1380,6 +1393,7 @@ export class SvgOverlay {
       hit.setAttribute('height', format(primitive.bounds.height));
       hit.setAttribute('fill', 'transparent');
       hit.setAttribute('data-plugin-interaction-id', primitive.interactionId);
+      hit.setAttribute('data-non-printing', '');
       hit.style.pointerEvents = 'all';
       if (primitive.cursor !== undefined) hit.style.cursor = primitive.cursor;
       applyAccessibility(hit, primitive.accessibility);
@@ -1673,7 +1687,7 @@ export function defaultRenderStyle(theme: Theme = CAD_PAPER): RenderStyle {
     lineColor: theme.ink,
     lineWidth: PEN.thin,
     textColor: theme.ink,
-    fontFamily: DEFAULT_FONT_FAMILY,
+    fontFamily: theme.fontStack,
     fontSize: DEFAULT_FONT_SIZE,
   });
 }

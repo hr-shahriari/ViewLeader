@@ -115,7 +115,20 @@ export interface Theme {
   readonly fontSize: number;
 }
 
-const FONT_STACK = "'Inter', 'Helvetica Neue', 'Roboto Condensed', Arial, sans-serif";
+/**
+ * Only faces that are already on the machine — nothing that has to be downloaded.
+ *
+ * The raster export loads the sheet as an `<img>` from a `blob:` URL. That is an isolated document:
+ * it inherits no stylesheet from the page and fetches no `@font-face`. So a downloadable family
+ * resolves on screen and silently falls through in the PNG, and the picture comes out at widths
+ * that were measured for a different face.
+ *
+ * Four names cover macOS, Windows and Linux. Nothing more is needed: `"Segoe UI"` after `Arial`
+ * can never fire because Arial ships on every Windows install, and `"Liberation Sans"` after
+ * `Arial` can never fire because fontconfig aliases Arial onto it. `Roboto` is out for the same
+ * reason `Inter` was — it is commonly delivered as a web font.
+ */
+export const FONT_STACK = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 
 /** Dark ink on light paper, the way a printed drawing looks. The default. */
 export const CAD_PAPER: Theme = Object.freeze({
