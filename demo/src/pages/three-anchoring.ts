@@ -4,7 +4,6 @@
 import { ViewLeader } from 'viewleader';
 import { createStableElementResolver, createThreeAdapter } from 'viewleader/three';
 import '../shared/example.css';
-import { claimChromeEdges } from '../shared/chromeInsets';
 import {
   createExampleHarness,
   exposeExampleManager,
@@ -63,11 +62,6 @@ try {
 
   harness.onFrame(() => leader.update());
   leader.update();
-
-  // The header's notes panel hangs over the top-right of the viewport, and a label laid out
-  // underneath it is invisible. Core never sees the host's DOM, so the page measures the panel
-  // and claims that edge — including when the reader opens or shuts it.
-  claimChromeEdges(() => leader);
 
   exposeExampleManager(leader);
   requestAnimationFrame(() => markExampleReady());

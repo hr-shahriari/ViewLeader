@@ -107,7 +107,7 @@ try {
         leader.annotations.select([`${NOTES[0].key}-${generation.value}`]);
         // The composable builds a NEW runtime for every mounted boundary, and insets live on the
         // runtime, so the claim has to be made again here or the fresh instance lays labels back
-        // under the control dock and the notes panel.
+        // under the control dock.
         reclaimChromeEdges();
         leader.update();
         exposeExampleManager(leader);

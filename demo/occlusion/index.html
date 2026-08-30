@@ -8,15 +8,6 @@
   <body>
     <header class="example-header">
       <div><a href="/">← Examples</a><strong>Occlusion &amp; hidden legs</strong></div>
-      <details class="page-notes" open>
-        <summary>About this example</summary>
-        <div class="page-notes-body">
-          <p><b>The question:</b> is that leader pointing at the door, or at a wall six metres in front of it?</p>
-          <p><b>Try:</b> one label, two legs — one on the front door, one on the corner column at the back. From almost any angle the building hides exactly one of them, and that leg draws dashed and dimmed (ISO 128: dashed means hidden) while its sibling and the label stay at full strength. <b>Flip to the other side</b> swaps which one; orbiting by hand does the same thing continuously. <b>Occlusion: on/off</b> hands the adapter an empty set of blockers instead of the model, so nothing can block anything and every leg goes solid — which is also what a host with no pickable geometry gets, by default and without an error.</p>
-          <p><b>Policy</b> cycles the annotation’s <code>occlusion</code> field. <b>keep</b>, the default, draws every leg and dashes and dims the buried ones. <b>fade</b> does the same, and drops the whole annotation to a quarter opacity once <i>every</i> leg is buried. <b>hide</b> drops a buried leg from the drawing altogether — stroke, arrowhead, grips and click target — leaving the label and any leg still in view where they were; bury every leg and the annotation goes with them.</p>
-          <p><b>API:</b> <code>createThreeOcclusionAdapter</code> · <code>adapters.occlusion</code> · <code>annotations.create</code> with <code>anchors</code> · <code>annotations.update(id, { occlusion })</code></p>
-        </div>
-      </details>
       <a href="/src/pages/occlusion.ts.txt">View source</a>
     </header>
     <main id="viewport" aria-label="Three.js viewport"></main>

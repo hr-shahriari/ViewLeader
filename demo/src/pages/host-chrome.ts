@@ -384,8 +384,8 @@ try {
   // The control dock is real chrome — `position: fixed`, painted over the viewport, and it takes the
   // pointer first. A label underneath it is visible and un-clickable, which is worse than a label
   // that moved. So the page measures its own chrome and tells ViewLeader; core cannot guess it,
-  // because core never sees your DOM. The measuring is shared with the other fourteen examples —
-  // the notes panel above is chrome too, and used to hide labels on every page in the gallery.
+  // because core never sees your DOM. The measuring is shared with the other examples that
+  // paint a dock of their own.
   claimChromeEdges(() => leader);
 
   harness.onFrame(() => {

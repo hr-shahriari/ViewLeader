@@ -42,23 +42,6 @@
   <body>
     <header class="example-header">
       <div><a href="/">← Examples</a><strong>Leader editor</strong></div>
-      <details class="page-notes" open>
-        <summary>About this example</summary>
-        <div class="page-notes-body">
-          <p><b>The question:</b> the whole loop — create a leader by clicking the model, then change every part of it.</p>
-          <ul>
-            <li><b>Tools</b>, one shot each; press the armed button again, or Escape, to cancel. <b>New leader</b>: click the model to place the arrow. <b>Multi-point leader</b>: click the arrow point, then each bend, and finish with Enter or a double-click. <b>Rectangle</b>, <b>Revision cloud</b>, <b>Ink</b>: drag across a wall.</li>
-            <li><b>Select:</b> click a label; <b>shift-, ⌘- or Ctrl-click</b> toggles another in or out. <b>Shift-drag</b> empty space to rubber-band a marquee, or <b>alt-drag to subtract</b> — plain left-drag orbits here because the page passes <code>adapters.controls</code>, and with an interaction adapter present <code>marquee</code> already defaults to <code>'none'</code>; <code>marquee: 'modifier'</code> asks the rubber band back on a shift- or alt-drag only.</li>
-            <li><b>Edit by hand:</b> drag a label to move it, drag an arrowhead grip onto something else, drag a route grip to bend a leg. Grips exist only on a <b>selected</b> leader, and the cursor changes over anything draggable.</li>
-            <li><b>Double-click</b> a label to retitle it: Enter commits, Escape cancels.</li>
-            <li><b>The boxes report the selection,</b> not the last value you picked: Leg, Leg routing and Style read the selected leader and grey out without one. Align needs two selected, Distribute needs three.</li>
-            <li><b>Keys:</b> ⌘/Ctrl+Z undo · ⌘/Ctrl+Shift+Z redo · ⌘/Ctrl+A select all · Delete · Escape.</li>
-            <li><b>Save</b> and <b>Load</b> round-trip the document through localStorage — <code>replace</code> swaps it into the live instance without reconstructing it.</li>
-            <li><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</li>
-          </ul>
-          <p><b>API:</b> <code>authoring.start({ draft, multiPoint })</code> · <code>authoring.cancel()</code> · <code>authoring.getSnapshot().preview</code> · <code>authoring.markup.start({ kind, draft })</code> / <code>complete()</code> / <code>subscribe()</code> · <code>markup.addAnchor/removeAnchor</code> · <code>annotations.rerouteLeg</code> · <code>annotations.update({ styleId })</code> · <code>annotations.align(edge)</code> / <code>distribute(axis)</code> · <code>definitions.list('style')</code> · <code>documents.serialize/parse/replace</code> · <code>editing.hitTestScreen</code> · <code>geometry.of(id)</code> · <code>history.undo/redo/transaction</code></p>
-        </div>
-      </details>
       <a href="/src/pages/leader-editor.ts.txt">View source</a>
     </header>
     <main id="viewport" aria-label="Three.js viewport"></main>

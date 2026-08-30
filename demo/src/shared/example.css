@@ -46,56 +46,6 @@ a { color: inherit; }
 }
 .vl-boundary svg { width: 100%; height: 100%; overflow: visible; }
 
-/* --- Per-example notes --- */
-/* The gallery is this library's only reference, so every shell carries the same short block: the
-   question the page answers, what to try, and the API it calls. It hangs off the header rather than
-   sitting in the viewport, so the closed state adds nothing over the drawing at all.
-
-   The open panel is `pointer-events: none` end to end. It is prose floating over the model, and a
-   card that ate a click meant for a label would be the `.control-dock` bug a second time. The
-   summary is the one interactive part — and the way out when the panel covers what you came to see. */
-.page-notes > summary {
-  pointer-events: auto;
-  padding: 5px 11px;
-  border: 1px solid #cdc9be;
-  border-radius: 999px;
-  font-size: 12px;
-  color: #3a3f49;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-}
-.page-notes > summary:hover { background: #fff; }
-/* Absolute against `.example-header`, which is fixed: the panel hangs below the 58 px band without
-   being part of it, so an open panel never changes the header's height or moves `#viewport`.
-   Selector carries the header too — `.example-header div` would otherwise win on specificity and
-   lay the panel out as a flex row. */
-.example-header .page-notes-body {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 20px;
-  display: block;
-  width: min(370px, calc(100vw - 40px));
-  max-height: calc(100vh - 88px);
-  overflow: hidden;
-  pointer-events: none;
-  padding: 14px 16px;
-  border: 1px solid rgb(26 29 36 / 14%);
-  border-radius: 12px;
-  background: rgb(244 242 236 / 94%);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 12px 32px rgb(35 38 45 / 12%);
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: #3a3f49;
-}
-.page-notes-body p { margin: 0 0 9px; }
-.page-notes-body ul { margin: 0 0 9px; padding-left: 15px; }
-.page-notes-body li { margin: 0 0 5px; }
-.page-notes-body > :last-child { margin-bottom: 0; }
-.page-notes-body b { color: #1a1d24; font-weight: 600; }
-.page-notes-body code { font-family: ui-monospace, monospace; font-size: 11.5px; color: #1a1d24; }
-
 /* --- Interactive control panel --- */
 /* Status above bar in one column, so a bar that wraps to two rows pushes the status up rather than
    being covered by it. A fixed offset on the status cannot know how many rows the bar took. */

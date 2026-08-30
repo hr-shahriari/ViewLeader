@@ -236,9 +236,9 @@ try {
   harness.onFrame(() => leader.update());
   leader.update();
 
-  // The control dock and the header's notes panel are both painted over the viewport, and a
-  // label laid out underneath either one is invisible. Core never sees the host's DOM, so the
-  // page measures its own chrome and claims those edges.
+  // The control dock is painted over the viewport, and a label laid out underneath it is
+  // invisible. Core never sees the host's DOM, so the page measures its own chrome and claims
+  // that edge.
   claimChromeEdges(() => leader);
 
   exposeExampleManager(leader);
