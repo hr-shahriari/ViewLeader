@@ -26,13 +26,17 @@ describe('examples gallery', () => {
     // hand-written links carry Vite's base placeholder, which resolves to `/` for every local
     // command and to `/ViewLeader/` in the deploy workflow. The contract this asserts is unchanged —
     // one gallery row per manifest entry, in order — only the prefix it skips over.
-    const linked = [...index.matchAll(/<h2><a href="%BASE_URL%([^/"]+)\/">([^<]+)<\/a>/gu)];
+    // Whitespace-tolerant between the tags and around the label: the gallery is hand-written prose
+    // and gets reformatted, and a row wrapped onto three lines is still the same row. Requiring
+    // `<h2><a` adjacent silently dropped four entries the moment the markup was re-indented, and the
+    // failure read as "the gallery lost four examples" rather than "the regex is too strict".
+    const linked = [...index.matchAll(/<h2>\s*<a href="%BASE_URL%([^/"]+)\/">([^<]*)<\/a>/gu)];
     expect(linked.map((match) => match[1])).toEqual(EXAMPLES.map((example) => example.dir));
     // The label too: `e2e/examples.spec.ts` asserts this text against the same list at runtime, and
     // catching a rename here costs milliseconds instead of a browser launch. `&` is escaped in the
     // markup and decoded by the browser, so it is decoded here as well — four labels contain one.
     const text = (value: string): string => value.replaceAll('&amp;', '&');
-    expect(linked.map((match) => text(match[2] ?? ''))).toEqual(EXAMPLES.map((example) => example.label));
+    expect(linked.map((match) => text(match[2] ?? '').trim())).toEqual(EXAMPLES.map((example) => example.label));
   });
 
   it('ships an HTML shell and a source page for each example', async () => {

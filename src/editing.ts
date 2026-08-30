@@ -1002,6 +1002,29 @@ export class EditingController {
     this.#releaseCapture();
   }
 
+  /**
+   * Takes the pointer for the rest of the gesture.
+   *
+   * Capture routes every later move and the release here regardless of hit testing. Without it a
+   * drag freezes the moment the pointer leaves the label: the near-universal way to mount an overlay
+   * on a 3D viewport is a `pointer-events: none` boundary — otherwise the overlay swallows orbit
+   * drags — and such a boundary receives nothing except what bubbles up from the annotation hit
+   * targets that re-enable events. So `pointermove` outside the label never arrives, and neither
+   * does `pointerup`. Capture bypasses hit testing entirely, which is exactly what it exists for.
+   *
+   * Deliberately not taken on every press. See `#connectInput`.
+   */
+  #capture(pointerId: number): void {
+    if (this.#capturedPointer !== undefined) return;
+    try {
+      this.#boundary.setPointerCapture(pointerId);
+      this.#capturedPointer = pointerId;
+    } catch {
+      // Not capturable (a detached boundary, or a jsdom-like environment). The gesture still works
+      // wherever events do reach us; `leave` stays meaningful precisely for this case.
+    }
+  }
+
   /** Gives the pointer back. The browser does this itself on release; this covers cancelling. */
   #releaseCapture(): void {
     const pointerId = this.#capturedPointer;
@@ -1110,25 +1133,22 @@ export class EditingController {
       if (!isPointerEvent(event)) return;
       if (isHostChrome(event.target)) return;
       this.pointerDown(normalizePointer(event, this.#boundary));
-      if (this.#active === undefined && this.#marquee === undefined) return;
-      // Capture routes every later move and the release here regardless of hit testing.
-      //
-      // Without it a drag freezes the moment the pointer leaves the label. The near-universal way to
-      // mount an overlay on a 3D viewport is a `pointer-events: none` boundary — otherwise the
-      // overlay swallows orbit drags — and such a boundary receives nothing except what bubbles up
-      // from the annotation hit targets that re-enable events. So `pointermove` outside the label
-      // never arrives, and neither does `pointerup`. Capture bypasses hit testing entirely, which is
-      // exactly what it exists for.
-      try {
-        this.#boundary.setPointerCapture(event.pointerId);
-        this.#capturedPointer = event.pointerId;
-      } catch {
-        // Not capturable (a detached boundary, or a jsdom-like environment). The gesture still works
-        // wherever events do reach us; `leave` below stays meaningful precisely for this case.
-      }
+      // A marquee is a drag from its first pixel, so it takes the pointer now. A press on an
+      // annotation is only a MAYBE-drag, and capturing one here is what used to swallow every plain
+      // click: capture retargets `pointerup` to the boundary, so the browser fires `click` on the
+      // nearest common ancestor of the down and up targets — the boundary — and the per-annotation
+      // click listener that `pointerUp` deliberately defers selection to never ran. Clicking a label
+      // selected nothing on every host that set `gestures: true`. A maybe-drag waits until it is a
+      // real one; see `move`.
+      if (this.#marquee !== undefined) this.#capture(event.pointerId);
     };
     const move = (event: Event): void => {
-      if (isPointerEvent(event)) this.pointerMove(normalizePointer(event, this.#boundary));
+      if (!isPointerEvent(event)) return;
+      this.pointerMove(normalizePointer(event, this.#boundary));
+      // `preview` is set the moment the press crosses `DRAG_THRESHOLD_PX`, which is what makes it a
+      // drag rather than a click. Three pixels in, the pointer is still over the annotation it
+      // pressed, so this move arrived by bubbling and every later one arrives by capture.
+      if (this.#active?.preview !== undefined) this.#capture(event.pointerId);
     };
     const up = (event: Event): void => {
       if (isPointerEvent(event)) this.pointerUp(normalizePointer(event, this.#boundary));
