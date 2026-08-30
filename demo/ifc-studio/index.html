@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IFC studio · ViewLeader examples</title>
+    <style>
+      /* The model tree is this page's own chrome, so it lives with this page. The inspector on the
+         right is `createSidePanel()` and its styles are shared, in `example.css`. */
+      .model-tree {
+        position: fixed;
+        z-index: 10;
+        top: 58px;
+        left: 0;
+        bottom: 0;
+        width: 244px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 16px 0 28px;
+        border-right: 1px solid rgb(26 29 36 / 14%);
+        background: rgb(244 242 236 / 94%);
+        backdrop-filter: blur(12px);
+        font-size: 12px;
+      }
+      .model-tree h1 {
+        margin: 0 18px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #5b6472;
+      }
+      .tree-actions { display: flex; gap: 6px; margin: 0 18px 12px; }
+      .tree-actions button {
+        font: inherit;
+        font-size: 12px;
+        padding: 4px 9px;
+        border: 1px solid #b9b5aa;
+        border-radius: 7px;
+        background: #fff;
+        color: #1a1d24;
+        cursor: pointer;
+      }
+      .tree-empty { margin: 0 18px; color: #8a8f98; line-height: 1.5; }
+
+      /* `<details>` is the disclosure widget, keyboard and screen-reader behaviour included. A div
+         with a click handler would be a re-implementation of all three. */
+      .tree-group > summary {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 5px 18px;
+        cursor: pointer;
+        font-weight: 600;
+        color: #1a1d24;
+      }
+      .tree-group > summary::marker { color: #8a8f98; }
+      .tree-group > summary:hover { background: rgb(26 29 36 / 5%); }
+      .tree-count { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 400; color: #8a8f98; }
+
+      .tree-row { display: flex; align-items: center; gap: 6px; padding: 0 10px 0 30px; }
+      .tree-row:hover { background: rgb(26 29 36 / 5%); }
+      /* Name and eye are separate buttons: framing an element and hiding it are different verbs, and
+         one row that did both depending on where you clicked would be a guessing game. */
+      .tree-name {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 0;
+        border: 0;
+        background: none;
+        font: inherit;
+        color: #3a3f49;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+      .tree-eye {
+        flex: none;
+        width: 22px;
+        padding: 2px 0;
+        border: 0;
+        background: none;
+        color: #8a8f98;
+        cursor: pointer;
+        line-height: 1;
+      }
+      .tree-eye[aria-pressed='false'] { color: #c4c0b6; }
+      .tree-row.is-hidden .tree-name { color: #b0aca2; text-decoration: line-through; }
+
+      /* The minimum inline text field: a box, the label's own font, and Enter. `/host-chrome/` has
+         the thorough version — IME, blur re-entrancy, per-style padding. */
+      .host-text-field {
+        position: absolute;
+        z-index: 20;
+        margin: 0;
+        padding: 0;
+        border: 1px solid #4b6ef5;
+        border-radius: 3px;
+        background: #fff;
+        color: #1a1d24;
+        resize: none;
+        overflow: hidden;
+      }
+
+      .vl-authoring-preview {
+        position: absolute;
+        z-index: 15;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        overflow: visible;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="example-header">
+      <div><a href="/">← Examples</a><strong>IFC studio</strong></div>
+      <a href="/src/pages/ifc-studio.ts.txt">View source</a>
+    </header>
+    <main id="viewport" aria-label="Three.js viewport"></main>
+    <script type="module" src="/src/pages/ifc-studio.ts"></script>
+  </body>
+</html>
