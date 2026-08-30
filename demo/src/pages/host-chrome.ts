@@ -307,15 +307,19 @@ try {
   // Bound by the host on `window`, because these keys are app-global. Core listens for `keydown`
   // only to cancel a gesture it already has in flight (Escape) — it never claims Del, the arrows or
   // ⌘A, so nothing here collides with it.
-  const nudge = (delta: Vec2, ids: readonly string[]): void => {
-    // One transaction is one undo step for the whole selection. Whether a *run* of held-down keys
-    // coalesces into one step is the host's call, not core's: this page takes one step per keypress.
+  const nudge = (delta: Vec2, ids: readonly string[], repeat: boolean): void => {
+    // One transaction is one undo step for the whole selection, and `coalesce` makes a *run* of
+    // held-down keys one step too. The caller opts in from `KeyboardEvent.repeat`, because only the
+    // caller knows a repeat is happening — core has no clock and never guesses from timing.
+    //
+    // Not optional bookkeeping: each `keydown` arrives in its own task, so without this a held arrow
+    // pushes an entry per repeat and evicts the whole 100-entry history in about three seconds.
     leader.history.transaction('Nudge annotations', () => {
       for (const id of ids) {
         const label = leader.geometry.of(id)?.label;
         if (label !== undefined) leader.annotations.move(id, { x: label.x + delta.x, y: label.y + delta.y });
       }
-    });
+    }, { coalesce: repeat });
   };
 
   const NUDGE: Readonly<Record<string, Vec2>> = {
@@ -358,8 +362,10 @@ try {
     if (delta === undefined) return;
     event.preventDefault();
     const step = event.shiftKey ? 10 : 1;
-    nudge({ x: delta.x * step, y: delta.y * step }, selected);
-    controls.status(`Nudged ${selected.length} by ${step} px — one undo step`);
+    nudge({ x: delta.x * step, y: delta.y * step }, selected, event.repeat);
+    controls.status(event.repeat
+      ? `Nudging ${selected.length} — the whole run is still one undo step`
+      : `Nudged ${selected.length} by ${step} px — one undo step`);
   });
 
   controls.button('Undo', () => {
@@ -378,8 +384,8 @@ try {
   // The control dock is real chrome — `position: fixed`, painted over the viewport, and it takes the
   // pointer first. A label underneath it is visible and un-clickable, which is worse than a label
   // that moved. So the page measures its own chrome and tells ViewLeader; core cannot guess it,
-  // because core never sees your DOM. The measuring is shared with the other fourteen examples —
-  // the notes panel above is chrome too, and used to hide labels on every page in the gallery.
+  // because core never sees your DOM. The measuring is shared with the other examples that
+  // paint a dock of their own.
   claimChromeEdges(() => leader);
 
   harness.onFrame(() => {

@@ -44,6 +44,7 @@ import type {
   Unsubscribe,
   Vec2,
 } from './types.js';
+import { revisionCache } from './internal/snapshot-cache.js';
 
 /**
  * How far the pointer must move before a press counts as a drag rather than a click.
@@ -223,6 +224,7 @@ export class EditingController {
   readonly #runtime: ViewLeaderRuntime;
   readonly #markup: () => MarkupAuthoringCapability;
   readonly #listeners = new Set<() => void>();
+  readonly #snapshotCache = revisionCache<EditingSnapshot>();
   readonly #cleanup: (() => void)[] = [];
   readonly #documentUnsubscribe: Unsubscribe;
   readonly #toolActive: () => boolean;
@@ -259,6 +261,7 @@ export class EditingController {
 
   public getSnapshot(): EditingSnapshot {
     const stamp = this.#runtime.documentsSnapshot();
+    return this.#snapshotCache(stamp.runtimeRevision, () => {
     const active = this.#active;
     const marquee = this.#marquee;
     return Object.freeze({
@@ -274,6 +277,7 @@ export class EditingController {
       target: active?.id ?? null,
       kind: active?.kind ?? null,
       leg: active?.legId ?? null,
+    });
     });
   }
 
@@ -1104,6 +1108,7 @@ export class EditingController {
   #connectInput(): void {
     const down = (event: Event): void => {
       if (!isPointerEvent(event)) return;
+      if (isHostChrome(event.target)) return;
       this.pointerDown(normalizePointer(event, this.#boundary));
       if (this.#active === undefined && this.#marquee === undefined) return;
       // Capture routes every later move and the release here regardless of hit testing.
@@ -1173,6 +1178,35 @@ export class EditingController {
       try { listener(); } catch { /* editing observers are isolated */ }
     }
   }
+}
+
+/**
+ * Whether a press came from chrome the host mounted inside the boundary, rather than from the model
+ * or the overlay.
+ *
+ * Hit testing is by position, so a host control sitting on top of a label reads as a press on the
+ * label — dragging it out from under the pointer. The gallery's own inline text editor is appended
+ * to the boundary and does exactly that: drag-selecting its text used to move the annotation.
+ *
+ * Form controls are recognised without the host doing anything, because typing and selecting inside
+ * one is the case that actually bites. Anything else opts out with `data-viewleader-ignore`, which
+ * is also what the shipped text editor sets. Deliberately *not* "the target is outside the overlay":
+ * a press on empty space lands on the host's own canvas and must still start a marquee.
+ *
+ * `ponytail:` a form-control list plus one attribute. Ceiling — a host mounting a non-form
+ * interactive element inside the boundary and forgetting the attribute still gets a drag. Upgrade
+ * path: honour `pointer-events` and z-order from the composed tree, which needs layout the core
+ * does not have.
+ */
+function isHostChrome(target: EventTarget | null): boolean {
+  if (target === null || typeof target !== 'object') return false;
+  const element = target as { readonly tagName?: unknown; readonly closest?: unknown };
+  if (typeof element.closest !== 'function') return false;
+  const closest = element.closest as (selectors: string) => unknown;
+  return closest.call(
+    element,
+    'input, textarea, select, button, [contenteditable=""], [contenteditable="true"], [data-viewleader-ignore]',
+  ) !== null;
 }
 
 /**

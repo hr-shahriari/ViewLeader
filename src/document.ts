@@ -160,6 +160,19 @@ export function serializeDocument(
  * Deliberately not exported from the package. Hosts reach it through the public capabilities
  * instead, which is what guarantees every change goes through a transaction and lands in history.
  */
+/** Options for {@link DocumentEngine.transaction}. */
+export interface TransactionOptions {
+  /**
+   * Merge this commit into the previous undo entry when the labels match, instead of pushing a new
+   * one — so a run of repeated edits is one undo step.
+   *
+   * The caller opts in because only the caller knows a repeat is happening: a keyboard hook reads
+   * `KeyboardEvent.repeat`. Inferring a run from timing instead would put a clock in the engine and
+   * would silently merge two deliberate edits that happened to land close together.
+   */
+  readonly coalesce?: boolean;
+}
+
 export class DocumentEngine {
   readonly #historyCapacity: number;
   readonly #limits: DocumentLimits;
@@ -171,6 +184,15 @@ export class DocumentEngine {
   #transactionDepth = 0;
   #working: ViewLeaderDocument | undefined;
   #transactionLabel: string | undefined;
+  #transactionCoalesce = false;
+  /**
+   * Whether the newest undo entry is the one the last commit wrote, with nothing since.
+   *
+   * A coalescing commit continues the previous one, so it may only merge into an entry that still
+   * describes the current state. An undo or redo steps off that entry — matching on the label alone
+   * would then rewrite a step the user has already moved away from and destroy it.
+   */
+  #undoHeadIsLastCommit = false;
   #idSequence = 0;
 
   public constructor(options: DocumentEngineOptions = {}) {
@@ -286,12 +308,17 @@ export class DocumentEngine {
     return outcome.result;
   }
 
-  public transaction<Result>(label: string, operation: () => Result): Result {
+  public transaction<Result>(
+    label: string,
+    operation: () => Result,
+    options: TransactionOptions = {},
+  ): Result {
     assertLabel(label);
     const outer = this.#transactionDepth === 0;
     if (outer) {
       this.#working = this.#document;
       this.#transactionLabel = label;
+      this.#transactionCoalesce = options.coalesce === true;
     }
     const savepoint = this.#activeDocument();
     this.#transactionDepth += 1;
@@ -336,6 +363,8 @@ export class DocumentEngine {
 
   public undo(): boolean {
     this.#assertOutsideTransaction('undo');
+    // Whatever is at the head after this is not something a later commit may merge into.
+    this.#undoHeadIsLastCommit = false;
     const entry = this.#undo.pop();
     if (entry === undefined) return false;
     this.#redo.push(entry);
@@ -345,6 +374,8 @@ export class DocumentEngine {
 
   public redo(): boolean {
     this.#assertOutsideTransaction('redo');
+    // A redone entry is the head again, but it is not this commit's to extend either.
+    this.#undoHeadIsLastCommit = false;
     const entry = this.#redo.pop();
     if (entry === undefined) return false;
     this.#undo.push(entry);
@@ -362,6 +393,7 @@ export class DocumentEngine {
       : prepareDocument(value, this.#limits, diagnose);
     this.#undo = [];
     this.#redo = [];
+    this.#undoHeadIsLastCommit = false;
     this.#publish(prepared, 'replacement');
     return this.#document;
   }
@@ -370,10 +402,20 @@ export class DocumentEngine {
     const before = this.#document;
     const after = prepareDocument(this.#activeDocument(), this.#limits);
     const label = this.#transactionLabel ?? 'Transaction';
+    const coalesce = this.#transactionCoalesce;
     this.#clearTransaction();
     if (canonicalStringify(before) === canonicalStringify(after)) return;
-    this.#undo.push({ label, before, after });
-    if (this.#undo.length > this.#historyCapacity) this.#undo.shift();
+    const last = this.#undo[this.#undo.length - 1];
+    if (coalesce && this.#undoHeadIsLastCommit && last !== undefined && last.label === label) {
+      // The run's original `before` is kept, so one undo returns to where the run started rather
+      // than to the previous repeat. Without this a held arrow key pushes an entry per repeat and
+      // evicts the whole history in about three seconds at the default capacity.
+      this.#undo[this.#undo.length - 1] = { label, before: last.before, after };
+    } else {
+      this.#undo.push({ label, before, after });
+      if (this.#undo.length > this.#historyCapacity) this.#undo.shift();
+    }
+    this.#undoHeadIsLastCommit = true;
     this.#redo = [];
     this.#publish(after, 'mutation');
   }
@@ -403,6 +445,7 @@ export class DocumentEngine {
   #clearTransaction(): void {
     this.#working = undefined;
     this.#transactionLabel = undefined;
+    this.#transactionCoalesce = false;
   }
 
   #assertOutsideTransaction(operation: string): void {

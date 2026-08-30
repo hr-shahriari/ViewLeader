@@ -126,9 +126,8 @@ try {
     leader.annotations.update(ANNOTATION_ID, { occlusion: POLICIES[policy]!.value });
   });
 
-  // The control dock and the header's notes panel are both painted over the viewport, and a label laid
-  // out underneath either one is invisible. Core never sees the host's DOM, so the page claims those
-  // edges itself.
+  // The control dock is painted over the viewport, and a label laid out underneath it is invisible.
+  // Core never sees the host's DOM, so the page claims that edge itself.
   claimChromeEdges(() => leader);
 
   exposeExampleManager(leader);

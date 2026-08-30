@@ -71,9 +71,9 @@ try {
   });
   bar.status('Markdown rendered by its plugin. Remove the plugin to see lossless preservation.');
 
-  // The control dock and the header's notes panel are both painted over the viewport, and a
-  // label laid out underneath either one is invisible. Core never sees the host's DOM, so the
-  // page measures its own chrome and claims those edges. The sync is kept because insets live
+  // The control dock is painted over the viewport, and a label laid out underneath it is
+  // invisible. Core never sees the host's DOM, so the page measures its own chrome and claims
+  // that edge. The sync is kept because insets live
   // on the runtime: the rebuild above hands back a fresh one, which has claimed nothing.
   const reclaimChromeEdges = claimChromeEdges(() => leader);
 

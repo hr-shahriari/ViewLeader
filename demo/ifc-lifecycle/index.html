@@ -8,15 +8,6 @@
   <body>
     <header class="example-header">
       <div><a href="/">← Examples</a><strong>Model reload & recovery</strong></div>
-      <details class="page-notes" open>
-        <summary>About this example</summary>
-        <div class="page-notes-body">
-          <p><b>The question:</b> what happens to an annotation when the model under it is unloaded and loaded again?</p>
-          <p><b>Try:</b> <b>Unload model</b> — the building goes, the resolver reports no sources, and the note falls back to the point the document stores. <b>Reload model</b> — the id re-resolves and the note snaps back onto the corner column. The canonical document is never touched either way.</p>
-          <p><b>Orbit</b> until an anchor swings behind the building — that leg draws dashed and dimmed (ISO 128: dashed means hidden) while the label stays at full strength.</p>
-          <p><b>API:</b> <code>createThreeElementInvalidationChannel()</code> · <code>invalidations.invalidate({ modelId })</code> · <code>createStableElementResolver()</code> · <code>annotations.create()</code></p>
-        </div>
-      </details>
       <a href="/src/pages/ifc-lifecycle.ts.txt">View source</a>
     </header>
     <main id="viewport" aria-label="Three.js viewport"></main>

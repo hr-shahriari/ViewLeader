@@ -45,7 +45,7 @@ export type { PlacementMode, ViewportInsets } from './labelPlacer.js';
 export { KEYNOTE_METADATA_KEY, type KeynoteEntry } from './keynotes.js';
 export { UNRESOLVED_TAG_TEXT } from './tagText.js';
 
-export { CURRENT_DOCUMENT_VERSION } from './document.js';
+export { CURRENT_DOCUMENT_VERSION, type TransactionOptions } from './document.js';
 export type {
   Anchor,
   AnchorResolutionStatus,
@@ -221,6 +221,10 @@ export {
   type EnclosureDefinition,
   type StyleDefinition,
   type StyleOverride,
+  type ResolvedStyle,
+  type StyleFieldSource,
+  mergeStyleOverride,
+  readStyleOverride,
   type TemplateDefinition,
   type TerminatorDefinition,
   type TerminatorSizing,

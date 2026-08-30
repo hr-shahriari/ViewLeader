@@ -8,20 +8,6 @@
   <body>
     <header class="example-header">
       <div><a href="/">← Examples</a><strong>Drafting styles</strong></div>
-      <details class="page-notes" open>
-        <summary>About this example</summary>
-        <div class="page-notes-body">
-          <p><b>The question:</b> what do the built-in drafting styles look like, and what is a style as opposed to a theme?</p>
-          <ul>
-            <li>Eleven styles ring the building. Each annotation names a <code>styleId</code> and nothing else — arrowhead, enclosure, landing and text alignment all come from the definition, in drafting units.</li>
-            <li><b>Theme</b> (paper / dark) — serialize, rebuild the instance on the other palette, reopen the same bytes. Same ids, no document edit: a theme is a rendering choice, like a camera.</li>
-            <li><b>Routing</b> — re-routes all eleven, because routing is per annotation, not per style.</li>
-            <li><b>Toggle long landings</b> — a typed partial deep-merged over each style, reaching only the landing’s length.</li>
-            <li><b>Measure a label</b> — reads the standard label’s pixel box back out of the frame that was actually drawn.</li>
-          </ul>
-          <p><b>API:</b> <code>annotations.create({ styleId })</code> · <code>annotations.update({ routing, styleOverride })</code> · <code>theme: CAD_PAPER | CAD_DARK</code> · <code>documents.serialize()</code> · <code>geometry.of(id)</code> · <code>BUILT_IN_DEFINITIONS</code> · <code>mm()</code></p>
-        </div>
-      </details>
       <a href="/src/pages/drafting-styles.ts.txt">View source</a>
     </header>
     <main id="viewport" aria-label="Three.js viewport"></main>

@@ -702,14 +702,17 @@ test('no label boxes overlap across a full orbit of the crowded scene', async ({
    * `artifacts/phase-2.1-diagnosis.md` for the measurement of why. Tracked as a bound that may fall
    * and may never rise, exactly as the vitest counterpart tracks it.
    *
-   * 16 is one above the worst measured. The two engines disagree — Chromium 15 pairs at 240°,
-   * WebKit 7 at 0° — because OrbitControls damping and each engine's own text metrics put the
-   * camera and the label widths in slightly different places, so one bound has to cover both, with
-   * a little headroom because damping makes the sampled angle itself vary run to run. Note
-   * this runs at Playwright's 1280x720, much wider than the vitest camera's 900x640, and wider is
-   * worse under sides-only placement for exactly the reason the diagnosis records.
+   * 28 is three above the worst measured, and the number moved because the *page* changed, not the
+   * layout. The header used to carry an open notes panel over the top-right, and `claimChromeEdges`
+   * handed core a ~400 px right inset for it (a 370 px card, 20 px from the edge, plus breathing
+   * room) — nearly a third of the width at 1280. Removing the panel gave that back, and a wider
+   * frame is worse under sides-only placement for exactly the reason the diagnosis records: worst
+   * went from Chromium 15 pairs at 240° and WebKit 7 at 0° to a flat 25 and 23 at 60°, the same
+   * angle in both engines, stable across three runs. Re-graded against the scene as it now is, not
+   * retuned to pass — the ratchet still only falls from here. The headroom is for damping, which
+   * moves the sampled angle a little run to run.
    */
-  expect(worst).toBeLessThanOrEqual(18);
+  expect(worst).toBeLessThanOrEqual(28);
   expect(errors).toEqual([]);
 });
 
@@ -892,5 +895,83 @@ test('labels do not swim across a full orbit of the crowded scene', async ({ pag
   const sorted = creeps.sort((left, right) => left - right);
   expect(sorted.length).toBeGreaterThan(200);
   expect(sorted[Math.floor(sorted.length * 0.5)]!).toBeLessThanOrEqual(CREEP_BUDGET_PX * 15);
+  expect(errors).toEqual([]);
+});
+
+test('the React example drags a leader by a handle the page drew itself', async ({ page }) => {
+  const errors = watchRuntimeErrors(page);
+  await page.goto('/react/');
+  await expect(page.locator('body')).toHaveAttribute('data-vl-ready', '1');
+
+  // Core's own grips are off on this page (`editing: { handles: 'none' }`), so every handle on
+  // screen came from `useHandles` — and its pointer props are the only thing routing into
+  // `begin*Drag`. Nothing else in the gallery drives that path.
+  const handles = page.locator('.framework-boundary [style*="border-radius"]');
+  await expect(handles.first()).toBeVisible();
+
+  const routing = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { get(id: string): { anchors: readonly { routing: { kind: string } }[] } | undefined };
+    };
+    return vl.annotations.get('roof-1')!.anchors[0]!.routing.kind;
+  });
+  const undoCount = (): Promise<number> => page.evaluate(
+    () => (window.vl as { history: { getSnapshot(): { undoCount: number } } }).history.getSnapshot().undoCount,
+  );
+
+  // An automatic leader offers exactly one handle on its length: grabbing it pulls a bend out.
+  expect(await routing()).toBe('automatic');
+  const before = await undoCount();
+
+  const midpoint = page.locator('.framework-boundary [style*="border-radius: 5px"]').first();
+  const box = (await midpoint.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 70, box.y + 55, { steps: 12 });
+  await page.mouse.up();
+
+  // The drag went through `beginRouteHandleDrag`, so the leader now carries a hand-placed bend.
+  expect(await routing()).toBe('manual');
+  expect(await undoCount()).toBe(before + 1);
+  expect(errors).toEqual([]);
+});
+
+test('the React example edits a label in place and recolours a selection', async ({ page }) => {
+  const errors = watchRuntimeErrors(page);
+  await page.goto('/react/');
+  await expect(page.locator('body')).toHaveAttribute('data-vl-ready', '1');
+
+  const text = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { get(id: string): { content: { text?: string } } | undefined };
+    };
+    return vl.annotations.get('roof-1')!.content.text ?? '';
+  });
+  const colour = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { resolvedStyle(id: string): { lineColor: string } | undefined };
+    };
+    return vl.annotations.resolvedStyle('roof-1')!.lineColor;
+  });
+
+  // The one component the package ships: a textarea sitting on the label, wearing the resolved font
+  // metrics the follow registry writes as custom properties.
+  const label = await page.evaluate(() => {
+    const vl = window.vl as { geometry: { of(id: string): { label: { x: number; y: number } } | undefined } };
+    return vl.geometry.of('roof-1')!.label;
+  });
+  const viewport = (await page.locator('#viewport').boundingBox())!;
+  await page.mouse.dblclick(viewport.x + label.x + 12, viewport.y + label.y + 8);
+
+  const field = page.locator('.framework-boundary textarea');
+  await expect(field).toBeVisible();
+  await field.fill('RC 250 mm');
+  await field.blur();
+  expect(await text()).toBe('RC 250 mm');
+
+  // And the style editor, over whatever is selected, as one undo step.
+  expect(await colour()).not.toBe('#b91c1c');
+  await page.locator('[data-swatch="#b91c1c"]').click();
+  expect(await colour()).toBe('#b91c1c');
   expect(errors).toEqual([]);
 });

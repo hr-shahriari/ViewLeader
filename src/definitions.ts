@@ -27,6 +27,7 @@ import type {
   Unsubscribe,
   Vec2,
 } from './types.js';
+import { revisionCache } from './internal/snapshot-cache.js';
 
 export type DefinitionKind = 'style' | 'template' | 'terminator' | 'enclosure';
 
@@ -418,7 +419,8 @@ const CHEVRON_ENCLOSURE: EnclosureDefinition = {
   ],
 };
 
-const DEFAULT_STYLE_ID = 'builtin.style.standard';
+/** The style an annotation resolves against when it names none. Internal: not in `index.ts`. */
+export const DEFAULT_STYLE_ID = 'builtin.style.standard';
 const GRID_BUBBLE_STYLE_ID = 'builtin.style.grid-bubble';
 
 /** How far the leader's tail runs, in paper millimetres. A note reaches furthest, a symbol less, a
@@ -672,14 +674,22 @@ export class DefinitionsCapability {
   /** The definitions this instance actually draws with, colours included. */
   readonly #builtIns: readonly TypedDefinition[];
 
+  readonly #snapshotCache = revisionCache<DefinitionsSnapshot>();
+
   public constructor(port: DefinitionDocumentPort, theme?: Theme) {
     this.#port = port;
     this.#builtIns = builtInDefinitions(theme);
   }
 
   public getSnapshot(): DefinitionsSnapshot {
-    const stamp = this.#port.snapshotStamp?.() ?? { runtimeRevision: 0, documentRevision: 0 };
-    return Object.freeze({ ...stamp, definitions: Object.freeze([...this.list()]) });
+    const stamp = this.#port.snapshotStamp?.();
+    const build = (): DefinitionsSnapshot => Object.freeze({
+      ...(stamp ?? { runtimeRevision: 0, documentRevision: 0 }),
+      definitions: Object.freeze([...this.list()]),
+    });
+    // No stamp means no change signal either — `subscribe` falls back to a no-op — so there is
+    // nothing to key a cache on and a fresh read is the honest answer.
+    return stamp === undefined ? build() : this.#snapshotCache(stamp.runtimeRevision, build);
   }
 
   public subscribe(listener: () => void): Unsubscribe {
@@ -1132,6 +1142,74 @@ export function mergeStyleOverride(base: StyleOverride, override: StyleOverride)
       ? {}
       : { content: { ...base.content, ...override.content } }),
   };
+}
+
+/**
+ * Which layer supplied a resolved field.
+ *
+ * A panel needs this to badge a field as overridden and to offer "revert to style" — without it a
+ * host has to re-implement the merge to work out whether a value is the style's or the
+ * annotation's, which is the duplication this exists to remove.
+ */
+export type StyleFieldSource = 'view-override' | 'annotation-override' | 'style';
+
+/**
+ * A style as it is actually being drawn, with the layer each field came from.
+ *
+ * Sizes are in **pixels and unscaled** — deliberately not the annotation-scaled values the renderer
+ * uses, and deliberately without a millimetre twin. `px → mm → px` round-trips exactly but
+ * `mm → px → mm` does not (up to 0.52% on the thinnest pen, and 19% if displayed to one decimal),
+ * so a panel must write back only the fields it actually touched. `from` is what makes that
+ * possible.
+ *
+ * Unlike `geometry.of()`, this is **stable**: it changes only when the document or the active saved
+ * view changes, both of which publish. It is safe to hold in framework state and subscribe to.
+ */
+export interface ResolvedStyle extends Omit<StyleDefinition, 'kind' | 'id' | 'name'> {
+  /** The style actually resolved against, which is what "revert to style" reverts to. */
+  readonly styleId: string;
+  /**
+   * Present for every field the resolved style carries.
+   *
+   * `ponytail:` keyed at the top level only, while `landing` and `content` merge one level deep.
+   * Ceiling — when two layers each set a *different* sub-field of the same group, this names the
+   * higher layer for the whole group, so a "revert to style" that clears `landing` discards the
+   * lower layer's sub-fields along with it. Upgrade path: let those two keys carry a nested
+   * `Record<keyof StyleLanding, StyleFieldSource>` instead of a single source, and have revert
+   * rebuild the group rather than delete it. Not built until a panel needs sub-field reverts.
+   */
+  readonly from: Readonly<Partial<Record<keyof StyleOverride, StyleFieldSource>>>;
+}
+
+/**
+ * Resolves one annotation's style through the three layers and records where each field came from.
+ *
+ * Precedence, highest first: the active saved view's override, the annotation's own override, then
+ * the style definition. `landing` and `content` merge one level deep, matching the renderer — a
+ * saved view setting one landing field must not wipe out the annotation's own settings beside it.
+ */
+export function resolveStyleWithProvenance(
+  style: StyleDefinition,
+  annotationOverride: StyleOverride = {},
+  viewOverride: StyleOverride = {},
+): ResolvedStyle {
+  const overrides = mergeStyleOverride(annotationOverride, viewOverride);
+  const from: { -readonly [Key in keyof StyleOverride]?: StyleFieldSource } = {};
+  // The reader map is typed `OverrideReaders<StyleOverride>`, so the compiler already forces an
+  // entry per field. Taking the field list from it means a new style field cannot be added without
+  // provenance following it.
+  for (const key of Object.keys(STYLE_OVERRIDE_READERS) as (keyof StyleOverride)[]) {
+    if (overrides[key] === undefined && style[key] === undefined) continue;
+    from[key] = viewOverride[key] !== undefined
+      ? 'view-override'
+      : annotationOverride[key] !== undefined ? 'annotation-override' : 'style';
+  }
+  const { kind, id, name, ...visual } = style;
+  return Object.freeze({
+    ...(mergeStyleOverride(visual, overrides) as Omit<StyleDefinition, 'kind' | 'id' | 'name'>),
+    styleId: id,
+    from: Object.freeze(from),
+  });
 }
 
 /** Returns nothing when the stored value is not something this version can use. */
