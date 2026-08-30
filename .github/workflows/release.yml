@@ -25,7 +25,7 @@ jobs:
       - name: Check tag matches package.json version
         run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
       # prerelease versions (0.0.1-beta.0) must not take the `latest` dist-tag
-      - run: npm publish --provenance --tag "$([[ ${GITHUB_REF_NAME} == *-* ]] && echo next || echo latest)"
+      - run: npm publish --provenance --tag "$([[ ${GITHUB_REF_NAME} == *-* ]] && echo beta || echo latest)"
         shell: bash
       - run: gh release create "${GITHUB_REF_NAME}" --generate-notes $([[ ${GITHUB_REF_NAME} == *-* ]] && echo --prerelease)
         shell: bash
