@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release
+  id-token: write   # npm trusted publishing (OIDC) — no NPM_TOKEN needed
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest   # trusted publishing needs npm >= 11.5.1
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Check tag matches package.json version
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+      # prerelease versions (0.0.1-beta.0) must not take the `latest` dist-tag
+      - run: npm publish --provenance --tag "$([[ ${GITHUB_REF_NAME} == *-* ]] && echo next || echo latest)"
+        shell: bash
+      - run: gh release create "${GITHUB_REF_NAME}" --generate-notes $([[ ${GITHUB_REF_NAME} == *-* ]] && echo --prerelease)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
