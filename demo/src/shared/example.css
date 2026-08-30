@@ -110,6 +110,88 @@ a { color: inherit; }
 }
 .control-status:empty { display: none; }
 
+/* --- Side panel --- */
+/* Docked rather than floating, and opaque: this is chrome a page owns a whole edge for, and the page
+   hands that edge to `setViewportInsets` so layout never puts a label underneath it. Unlike
+   `.control-dock` it takes pointer events everywhere — there is no model behind it to click. */
+.side-panel {
+  position: fixed;
+  z-index: 10;
+  top: 58px;
+  right: 0;
+  bottom: 0;
+  width: 296px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 18px 28px;
+  border-left: 1px solid rgb(26 29 36 / 14%);
+  background: rgb(244 242 236 / 94%);
+  backdrop-filter: blur(12px);
+}
+.side-panel h1 { margin: 0 0 4px; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #5b6472; }
+.panel-status { display: block; min-height: 32px; margin-bottom: 8px; font-size: 12px; line-height: 1.4; color: #3a3f49; }
+.panel-section { padding: 12px 0 4px; border-top: 1px solid rgb(26 29 36 / 10%); }
+.panel-section h2 { margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #8a8f98; }
+.panel-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.panel-buttons button {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 9px;
+  border: 1px solid #b9b5aa;
+  border-radius: 7px;
+  background: #fff;
+  color: #1a1d24;
+  cursor: pointer;
+}
+.panel-buttons button:disabled { opacity: .45; cursor: default; }
+.panel-buttons button[aria-pressed='true'] { border-color: #4b6ef5; box-shadow: inset 0 0 0 1px #4b6ef5; }
+
+/* Caption, control and readout on one row, so twenty fields stay scannable as a column of pairs. */
+.panel-field {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: #3a3f49;
+}
+.panel-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-field input { width: 100%; min-width: 0; font: inherit; accent-color: #4b6ef5; }
+.panel-field input[type='color'] { height: 24px; padding: 0; border: 1px solid #b9b5aa; border-radius: 6px; background: #fff; cursor: pointer; }
+.panel-field input[type='range'] { height: 20px; cursor: pointer; }
+.panel-field:has(input:disabled) { opacity: .45; }
+.panel-field:has(input:disabled) input { cursor: default; }
+/* The readout sits under the control in its own column so a changing number never reflows the row. */
+.panel-readout { grid-column: 2; font-size: 11px; font-variant-numeric: tabular-nums; color: #8a8f98; text-align: right; }
+.panel-readout:empty { display: none; }
+/* A field the selection overrides, versus one inherited from its style. Marking the caption rather
+   than the control keeps the swatch showing its own colour and nothing else. */
+.panel-field.is-overridden .panel-caption { color: #1a1d24; font-weight: 600; }
+.panel-field.is-overridden .panel-caption::before { content: '● '; color: #4b6ef5; font-size: 9px; }
+
+/* A select carries the same override marker. Its caption is a bare `span` inside `.control-select`,
+   not a `.panel-caption`, so the rule above cannot reach it and the Shape and Arrowhead rows were
+   the only overridable fields in the panel that never lit up. */
+.side-panel .control-select.is-overridden span { color: #1a1d24; font-weight: 600; }
+.side-panel .control-select.is-overridden span::before { content: '● '; color: #4b6ef5; font-size: 9px; }
+
+/* Selects inside a panel are rows like every other field, not the inline pills the bar uses. */
+.side-panel .control-select { display: grid; grid-template-columns: 1fr 96px; gap: 8px; width: 100%; margin-bottom: 7px; white-space: normal; }
+.side-panel .control-select span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-panel .control-select select {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 5px;
+  border: 1px solid #b9b5aa;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1d24;
+  cursor: pointer;
+}
+
 /* Framework example pages let their hook own the overlay div. */
 .framework-boundary { position: absolute; inset: 0; }
 .framework-boundary svg { width: 100%; height: 100%; overflow: visible; }

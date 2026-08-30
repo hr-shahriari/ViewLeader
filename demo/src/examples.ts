@@ -40,4 +40,5 @@ export const EXAMPLES: readonly ExampleRoute[] = [
   { dir: 'leader-editor', source: 'leader-editor.ts', label: 'Leader editor', input: 'leaderEditor' },
   { dir: 'bcf', source: 'bcf.ts', label: 'BCF 2.1 round trip', input: 'bcf' },
   { dir: 'occlusion', source: 'occlusion.ts', label: 'Occlusion & hidden legs', input: 'occlusion' },
+  { dir: 'ifc-studio', source: 'ifc-studio.ts', label: 'IFC studio', input: 'ifcStudio' },
 ];
