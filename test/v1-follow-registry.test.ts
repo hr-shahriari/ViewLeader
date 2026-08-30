@@ -178,6 +178,54 @@ describe('the follow registry', () => {
     registry.dispose();
   });
 
+  it('does not touch the host’s styling on a first write it never hid', () => {
+    // The first write has no previous state, which is not the same as "was hidden" — treating it as
+    // such cleared `pointer-events` on frame one and left every followed element unclickable.
+    const { registry, frame } = harness();
+    const element = div();
+    element.style.pointerEvents = 'auto';
+    registry.ref({ kind: 'label', id: 'n' })(element);
+    frame();
+    expect(element.style.pointerEvents).toBe('auto');
+    registry.dispose();
+  });
+
+  it('gives the host back its own visibility and pointer-events', () => {
+    // Every followed element is hidden for its first write, before geometry exists — so removing
+    // these instead of restoring them deleted the host's value permanently. The demo's handles were
+    // unclickable for exactly this reason, and no unit test caught it because none of them set a
+    // value of their own first.
+    const { registry, frame, setGeometry } = harness();
+    const element = div();
+    element.style.pointerEvents = 'auto';
+    element.style.visibility = 'visible';
+
+    setGeometry(undefined);
+    registry.ref({ kind: 'label', id: 'n' })(element);
+    frame();
+    expect(element.style.visibility).toBe('hidden');
+    expect(element.style.pointerEvents).toBe('none');
+
+    setGeometry(geometry({ x: 5, y: 6, width: 10, height: 10 }));
+    frame();
+    expect(element.style.pointerEvents).toBe('auto');
+    expect(element.style.visibility).toBe('visible');
+    registry.dispose();
+  });
+
+  it('leaves nothing behind when the host had no value of its own', () => {
+    const { registry, frame, setGeometry } = harness();
+    const element = div();
+    setGeometry(undefined);
+    registry.ref({ kind: 'label', id: 'n' })(element);
+    frame();
+    setGeometry(geometry({ x: 5, y: 6, width: 10, height: 10 }));
+    frame();
+    expect(element.style.pointerEvents).toBe('');
+    expect(element.style.visibility).toBe('');
+    registry.dispose();
+  });
+
   it('follows an ink point through its own geometry', () => {
     const { registry, frame } = harness();
     const element = div();

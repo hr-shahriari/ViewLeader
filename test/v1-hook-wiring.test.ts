@@ -222,7 +222,7 @@ describe('Vue hook wiring', () => {
         Object.assign(seen, {
           read: () => ({
             follow: follow.registry.value,
-            handles: handles.value,
+            handles: handles.controller.value,
             editor: editor.value,
             style: style.value,
             draft: draft.value,

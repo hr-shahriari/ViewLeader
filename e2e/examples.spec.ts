@@ -894,3 +894,81 @@ test('labels do not swim across a full orbit of the crowded scene', async ({ pag
   expect(sorted[Math.floor(sorted.length * 0.5)]!).toBeLessThanOrEqual(CREEP_BUDGET_PX * 15);
   expect(errors).toEqual([]);
 });
+
+test('the React example drags a leader by a handle the page drew itself', async ({ page }) => {
+  const errors = watchRuntimeErrors(page);
+  await page.goto('/react/');
+  await expect(page.locator('body')).toHaveAttribute('data-vl-ready', '1');
+
+  // Core's own grips are off on this page (`editing: { handles: 'none' }`), so every handle on
+  // screen came from `useHandles` — and its pointer props are the only thing routing into
+  // `begin*Drag`. Nothing else in the gallery drives that path.
+  const handles = page.locator('.framework-boundary [style*="border-radius"]');
+  await expect(handles.first()).toBeVisible();
+
+  const routing = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { get(id: string): { anchors: readonly { routing: { kind: string } }[] } | undefined };
+    };
+    return vl.annotations.get('roof-1')!.anchors[0]!.routing.kind;
+  });
+  const undoCount = (): Promise<number> => page.evaluate(
+    () => (window.vl as { history: { getSnapshot(): { undoCount: number } } }).history.getSnapshot().undoCount,
+  );
+
+  // An automatic leader offers exactly one handle on its length: grabbing it pulls a bend out.
+  expect(await routing()).toBe('automatic');
+  const before = await undoCount();
+
+  const midpoint = page.locator('.framework-boundary [style*="border-radius: 5px"]').first();
+  const box = (await midpoint.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 70, box.y + 55, { steps: 12 });
+  await page.mouse.up();
+
+  // The drag went through `beginRouteHandleDrag`, so the leader now carries a hand-placed bend.
+  expect(await routing()).toBe('manual');
+  expect(await undoCount()).toBe(before + 1);
+  expect(errors).toEqual([]);
+});
+
+test('the React example edits a label in place and recolours a selection', async ({ page }) => {
+  const errors = watchRuntimeErrors(page);
+  await page.goto('/react/');
+  await expect(page.locator('body')).toHaveAttribute('data-vl-ready', '1');
+
+  const text = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { get(id: string): { content: { text?: string } } | undefined };
+    };
+    return vl.annotations.get('roof-1')!.content.text ?? '';
+  });
+  const colour = (): Promise<string> => page.evaluate(() => {
+    const vl = window.vl as {
+      annotations: { resolvedStyle(id: string): { lineColor: string } | undefined };
+    };
+    return vl.annotations.resolvedStyle('roof-1')!.lineColor;
+  });
+
+  // The one component the package ships: a textarea sitting on the label, wearing the resolved font
+  // metrics the follow registry writes as custom properties.
+  const label = await page.evaluate(() => {
+    const vl = window.vl as { geometry: { of(id: string): { label: { x: number; y: number } } | undefined } };
+    return vl.geometry.of('roof-1')!.label;
+  });
+  const viewport = (await page.locator('#viewport').boundingBox())!;
+  await page.mouse.dblclick(viewport.x + label.x + 12, viewport.y + label.y + 8);
+
+  const field = page.locator('.framework-boundary textarea');
+  await expect(field).toBeVisible();
+  await field.fill('RC 250 mm');
+  await field.blur();
+  expect(await text()).toBe('RC 250 mm');
+
+  // And the style editor, over whatever is selected, as one undo step.
+  expect(await colour()).not.toBe('#b91c1c');
+  await page.locator('[data-swatch="#b91c1c"]').click();
+  expect(await colour()).toBe('#b91c1c');
+  expect(errors).toEqual([]);
+});

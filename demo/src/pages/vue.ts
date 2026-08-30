@@ -1,9 +1,23 @@
 // The Vue package mounts one ViewLeader inside the component's effect scope. `viewLeader` is a ref that
 // becomes non-null once the boundary element is in the DOM, and stopping the scope disposes it. A keyed
 // boundary element reconstructs the instance. This page commands the live instance and replaces it.
+//
+// Everything above the lifecycle is headless: the composables return state and spreadable props, and
+// this page owns every element and every pixel of styling. Only the inline text editor ships as a
+// component, because its markup carries knowledge — it has to sit *on* the text it replaces without
+// the glyphs jumping, which is what the CSS custom properties the follow registry writes are for.
 import { createThreeAdapter } from 'viewleader/three';
-import { useViewLeader } from 'viewleader/vue';
-import { createApp, h, nextTick, ref, watch } from 'vue';
+import {
+  LabelTextEditor,
+  useEditingKeyboard,
+  useFollow,
+  useHandles,
+  useLabelTextEditor,
+  useStyleEditor,
+  useViewLeader,
+  useViewLeaderSnapshot,
+} from 'viewleader/vue';
+import { computed, createApp, h, nextTick, ref, shallowRef, watch, type VNode } from 'vue';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
@@ -31,6 +45,22 @@ try {
     occlusion: { objects: () => [building.root], epsilon: SELF_OCCLUSION_EPSILON },
   });
 
+  const NOTES = [
+    { key: 'roof', element: MOCK_ELEMENTS.roofSlab, title: 'Roof slab', text: 'RC 200 mm' },
+    { key: 'door', element: MOCK_ELEMENTS.frontDoor, title: 'Front door', text: 'D-04' },
+    { key: 'column', element: MOCK_ELEMENTS.cornerColumn, title: 'Corner column', text: 'C-12' },
+  ] as const;
+
+  const SWATCHES = ['#1f2937', '#b91c1c', '#047857'] as const;
+
+  /** Absolutely positioned against the boundary; the registry writes the transform every frame. */
+  const followed = {
+    position: 'absolute',
+    top: '0',
+    left: '0',
+    pointerEvents: 'auto',
+  } as const;
+
   const generation = ref(1);
   let binding: ReturnType<typeof useViewLeader> | undefined;
   harness.onFrame(() => binding?.viewLeader.value?.update());
@@ -38,14 +68,43 @@ try {
   const app = createApp({
     setup() {
       binding = useViewLeader({ adapters });
-      // When the composable produces a live instance, seed one note for the current generation.
-      watch(binding.viewLeader, (leader) => {
+      const live = binding.viewLeader;
+
+      const follow = useFollow(live);
+      const annotations = useViewLeaderSnapshot(() => live.value?.annotations ?? null);
+      const selectedId = computed(() => annotations.value?.selectedIds[0] ?? null);
+      const handles = useHandles(live, follow.registry, () => selectedId.value ?? 'none');
+      const editor = useLabelTextEditor(live, follow.registry);
+      const style = useStyleEditor(live);
+      const styleState = useViewLeaderSnapshot(style);
+      // Arrows nudge, Shift+arrow nudges further, Delete removes, Escape clears. A held arrow is one
+      // undo step, not one per repeat — the difference between undo working and undo having been
+      // evicted by the time you reach for it.
+      useEditingKeyboard(live);
+
+      // Vue's second door, and the reason the binding has one: here the framework fills a template
+      // ref and the library reads it, rather than the library installing a callback. `follow.ref`
+      // below is the React-shaped path; both reach the same registry.
+      const toolbar = shallowRef<Element | null>(null);
+      follow.track(() => ({ kind: 'label' as const, id: selectedId.value ?? 'none' }), toolbar);
+
+      // When the composable produces a live instance, seed this generation's notes.
+      watch(live, (leader) => {
         if (!leader) return;
-        leader.annotations.create({
-          id: `note-${generation.value}`,
-          anchor: { kind: 'world-point', point: MOCK_ELEMENTS.roofSlab.point },
-          content: { kind: 'callout', title: `Vue #${generation.value}`, text: 'Owned by the composable' },
-        });
+        for (const note of NOTES) {
+          leader.annotations.create({
+            id: `${note.key}-${generation.value}`,
+            anchor: {
+              kind: 'element',
+              modelId: 'building',
+              elementId: note.element.id,
+              // Where the leader points if the element is not in the model this session.
+              fallbackPoint: note.element.point,
+            },
+            content: { kind: 'callout', title: note.title, text: note.text },
+          });
+        }
+        leader.annotations.select([`${NOTES[0].key}-${generation.value}`]);
         // The composable builds a NEW runtime for every mounted boundary, and insets live on the
         // runtime, so the claim has to be made again here or the fresh instance lays labels back
         // under the control dock and the notes panel.
@@ -54,6 +113,78 @@ try {
         exposeExampleManager(leader);
         markExampleReady();
       });
+
+      const chrome = (): VNode[] => {
+        const id = selectedId.value;
+        if (id === null || follow.registry.value === null) return [];
+        const current = styleState.value?.fields.lineColor;
+        return [
+          // Handles, drawn by this page rather than by core. `props` arrive already routed to the
+          // right `begin*Drag` — there are four of those in core, and picking between them is what
+          // the composable absorbs — with pointer capture and Escape wired.
+          ...handles.entries.value.map((entry) => h('div', {
+            key: entry.key,
+            ref: handles.ref(entry),
+            ...entry.props,
+            style: {
+              ...followed,
+              width: '9px',
+              height: '9px',
+              marginLeft: '-5px',
+              marginTop: '-5px',
+              cursor: entry.cursor,
+              // Square for the arrow end, round for anything that reshapes the leader.
+              borderRadius: entry.kind === 'handle' ? '2px' : '5px',
+              // A midpoint inserts a bend rather than moving one, and hollow-versus-solid is the
+              // only thing on screen that says so.
+              background: entry.cursor === 'copy' ? '#fff' : '#2563eb',
+              border: '1.5px solid #2563eb',
+              boxSizing: 'border-box',
+            },
+          })),
+          // A label target carries the label's size as well as its position, so this shell *is* the
+          // label's box and the toolbar sits above it with `bottom: 100%` rather than guessing an
+          // offset. The positioned node stays the library's; the styled node stays ours.
+          h('div', {
+            key: 'toolbar',
+            ref: toolbar,
+            style: followed,
+          }, [h('div', {
+            style: {
+              position: 'absolute',
+              left: '0',
+              bottom: 'calc(100% + 6px)',
+              display: 'flex',
+              gap: '4px',
+              padding: '4px',
+              background: '#fff',
+              border: '1px solid #d4d8e0',
+              borderRadius: '6px',
+              boxShadow: '0 2px 8px rgb(16 20 28 / 12%)',
+            },
+          }, SWATCHES.map((colour) => h('button', {
+            key: colour,
+            type: 'button',
+            'aria-label': `Line colour ${colour}`,
+            'data-swatch': colour,
+            onClick: () => style.value?.set('lineColor', colour),
+            style: {
+              width: '18px',
+              height: '18px',
+              padding: '0',
+              borderRadius: '4px',
+              background: colour,
+              cursor: 'pointer',
+              // `mixed` is a real state, not an absent one: with several selected and disagreeing,
+              // no swatch is the current one.
+              border: current?.mixed === false && current.value === colour
+                ? '2px solid #111'
+                : '1px solid #d4d8e0',
+            },
+          })))]),
+        ];
+      };
+
       // A changing key remounts the boundary, disposing the prior instance and reconstructing.
       return () =>
         h('div', {
@@ -61,7 +192,15 @@ try {
           ref: (element: unknown) => binding?.boundaryRef(element instanceof Element ? element : null),
           class: 'framework-boundary',
           'aria-label': `Vue viewer ${generation.value}`,
-        });
+        }, [
+          h('div', {
+            style: { position: 'absolute', inset: '0', pointerEvents: 'none' },
+            ...(editor.value === null ? {} : { onDblclick: editor.value.boundaryProps.onDoubleClick }),
+          }, [
+            ...chrome(),
+            h(LabelTextEditor, { editor: editor.value }),
+          ]),
+        ]);
     },
   });
   const bar = createControlBar();
@@ -70,7 +209,8 @@ try {
     await nextTick();
     bar.status('Vue disposed the prior instance and reconstructed for the keyed element.');
   });
-  bar.status('One ViewLeader owned by the Vue composable. Replace the boundary to prove reconstruction.');
+  bar.status('Click a label to select it. Drag its handles, double-click to retype, recolour from'
+    + ' the toolbar, nudge with the arrows. Every element here belongs to the page.');
   // Both of these have to exist BEFORE `app.mount()`, and the order is not a style choice. The
   // composable sets `viewLeader` from a `flush: 'sync'` watcher on the boundary ref, and the ref is
   // set while the component's render effect is still running, so the watcher above — plain `watch`,

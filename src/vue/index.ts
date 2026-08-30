@@ -9,6 +9,7 @@ import {
   watch,
   type ComponentPublicInstance,
   type PropType,
+  type Ref,
   type ShallowRef,
   type VNode,
 } from 'vue';
@@ -34,6 +35,7 @@ import {
 import { EditingKeyboard, type EditingKeyboardOptions } from '../internal/keyboard.js';
 import {
   HandlesController,
+  type HandleEntry,
   type HandlesTarget,
 } from '../internal/handles.js';
 import {
@@ -202,15 +204,23 @@ export function useFollow(
       callbacks.set(key, callback);
       return callback;
     },
-    track: (target, source, options) => {
+    track: (targetSource, source, options) => {
       const stopTracking = watch(
-        () => [registry.value, resolveVueSource(source) ?? null] as const,
-        ([current, element], _previous, onCleanup) => {
+        // Array of getters, so Vue compares element-wise; one getter returning a tuple is always
+        // unequal to itself and would re-register on every tick.
+        [
+          () => registry.value,
+          () => resolveVueSource(source) ?? null,
+          // The target is reactive too: a toolbar that follows *the selection* changes target as the
+          // selection does, and re-calling `track` for each one is not something a `setup` can do.
+          () => resolveVueSource(targetSource),
+        ],
+        ([current, element, target], _previous, onCleanup) => {
           const node = elementOf(element);
           if (current === null || node === null) return;
           onCleanup(current.register(target, node, options));
         },
-        { immediate: true, flush: 'sync' },
+        { immediate: true, flush: 'sync', deep: true },
       );
       onScopeDispose(stopTracking);
       return stopTracking;
@@ -228,9 +238,14 @@ export interface VueFollowBinding {
    * component rather than a plain tag. The instance's root element is used in that case.
    */
   ref(target: FollowTarget, options?: FollowOptions): (element: VueRefTarget) => void;
-  /** Watches a template ref and registers whatever it holds. Returns a stop handle. */
+  /**
+   * Watches a template ref and registers whatever it holds. Returns a stop handle.
+   *
+   * The target may itself be reactive — chrome that follows the selection points at a different
+   * annotation as the selection moves, and `setup` runs once.
+   */
   track(
-    target: FollowTarget,
+    target: MaybeVueSource<FollowTarget>,
     source: MaybeVueSource<VueRefTarget>,
     options?: FollowOptions,
   ): () => void;
@@ -490,7 +505,7 @@ export function useHandles(
   viewLeaderSource: MaybeVueSource<ViewLeader | null | undefined>,
   followSource: MaybeVueSource<FollowRegistry | null | undefined>,
   targetSource: MaybeVueSource<HandlesTarget>,
-): Readonly<ShallowRef<HandlesController | null>> {
+): VueHandlesBinding {
   const controller = shallowRef<HandlesController | null>(null);
   // An **array of getters**, not one getter returning an array. Vue compares a getter's result with
   // `Object.is`, so a fresh tuple every evaluation is always "changed" and the key would gate
@@ -530,7 +545,37 @@ export function useHandles(
     controller.value?.dispose();
     controller.value = null;
   });
-  return controller as Readonly<ShallowRef<HandlesController | null>>;
+
+  // Memoised by handle key, for the same reason the follow binding memoises: Vue fires a function
+  // ref on every update, and a fresh identity per render would detach and reattach every handle
+  // mid-drag. Also accepts the component instance Vue passes when a `:ref` sits on a component.
+  const callbacks = new Map<string, (element: VueRefTarget) => void>();
+
+  return {
+    controller: controller as Readonly<ShallowRef<HandlesController | null>>,
+    entries: computed(() => controller.value?.getSnapshot() ?? EMPTY_HANDLE_ENTRIES),
+    ref: (entry) => {
+      const existing = callbacks.get(entry.key);
+      if (existing !== undefined) return existing;
+      const callback = (element: VueRefTarget): void => {
+        controller.value?.ref(entry)(elementOf(element));
+      };
+      callbacks.set(entry.key, callback);
+      return callback;
+    },
+  };
+}
+
+const EMPTY_HANDLE_ENTRIES: readonly HandleEntry[] = Object.freeze([]);
+
+export interface VueHandlesBinding {
+  /** `null` until both the `ViewLeader` and a follow registry exist. */
+  readonly controller: Readonly<ShallowRef<HandlesController | null>>;
+  /** The current handles. Changes when they appear, vanish or change identity — not when they move,
+   *  which the follow registry writes straight to the DOM. */
+  readonly entries: Readonly<Ref<readonly HandleEntry[]>>;
+  /** A `:ref` callback for one handle, stable across renders. */
+  ref(entry: HandleEntry): (element: VueRefTarget) => void;
 }
 
 export {

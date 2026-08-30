@@ -75,6 +75,17 @@ interface LastWrite {
   height: string | undefined;
   hidden: boolean;
   /**
+   * The host's own inline `visibility` and `pointer-events`, captured the first time this element
+   * is hidden.
+   *
+   * Hiding has to write both, but they are not the registry's properties to own: a host that set
+   * `pointer-events: auto` on its toolbar expects it back when the label returns. Removing them
+   * outright — which is what this used to do — silently deletes the host's value the first time a
+   * target has no geometry, and every followed element starts that way for one frame. The demo's
+   * handles were unclickable for exactly this reason.
+   */
+  restore: { readonly visibility: string; readonly pointerEvents: string } | undefined;
+  /**
    * A signature of every metric written, not just the family.
    *
    * Guarding on the family alone left `--vl-font-size`, `--vl-line-height`, `--vl-text-color` and
@@ -267,14 +278,20 @@ function applyResolved(element: Element, resolved: Resolved, last: LastWrite | u
   const width = resolved.width === undefined ? undefined : `${resolved.width}px`;
   const height = resolved.height === undefined ? undefined : `${resolved.height}px`;
   const metrics = resolved.text === undefined ? undefined : metricsSignature(resolved.text);
-  const next: LastWrite = { transform, width, height, hidden: false, metrics };
+  const next: LastWrite = {
+    transform, width, height, hidden: false, metrics, restore: last?.restore,
+  };
   if (style === undefined) return next;
 
   // Every write is guarded, which is what makes running this unconditionally every frame cheap.
   if (last?.transform !== transform) style.setProperty('transform', transform);
-  if (last?.hidden !== false) {
-    style.removeProperty('visibility');
-    style.removeProperty('pointer-events');
+  // Only when this element was actually hidden by us. `!== false` also caught the very first write,
+  // where `last` is undefined and nothing has been hidden — so the unhide branch ran anyway and
+  // cleared two properties the registry never set, deleting the host's own values on frame one.
+  if (last?.hidden === true) {
+    // Put back exactly what the host had, rather than clearing the declaration.
+    setOrClear(style, 'visibility', last.restore?.visibility || undefined);
+    setOrClear(style, 'pointer-events', last.restore?.pointerEvents || undefined);
     element.removeAttribute('data-vl-follow');
   }
   if (last?.width !== width) setOrClear(style, 'width', width);
@@ -300,12 +317,17 @@ function applyResolved(element: Element, resolved: Resolved, last: LastWrite | u
  */
 function applyHidden(element: Element, last: LastWrite | undefined): LastWrite {
   const style = styleOf(element);
+  const restore = last?.restore ?? (style === undefined ? undefined : {
+    visibility: style.getPropertyValue('visibility'),
+    pointerEvents: style.getPropertyValue('pointer-events'),
+  });
   const next: LastWrite = {
     transform: last?.transform ?? '',
     width: last?.width,
     height: last?.height,
     hidden: true,
     metrics: last?.metrics,
+    restore,
   };
   if (style === undefined || last?.hidden === true) return next;
   style.setProperty('visibility', 'hidden');
