@@ -22,7 +22,11 @@ const exists = async (path: string): Promise<boolean> =>
 describe('examples gallery', () => {
   it('links every example from the gallery index, in order', async () => {
     const index = await readFile(resolve(demo, 'index.html'), 'utf8');
-    const linked = [...index.matchAll(/<h2><a href="\/([^/"]+)\/">([^<]+)<\/a>/gu)];
+    // `%BASE_URL%`, not a leading `/`: GitHub Pages serves a project repo from a subpath, so the
+    // hand-written links carry Vite's base placeholder, which resolves to `/` for every local
+    // command and to `/ViewLeader/` in the deploy workflow. The contract this asserts is unchanged —
+    // one gallery row per manifest entry, in order — only the prefix it skips over.
+    const linked = [...index.matchAll(/<h2><a href="%BASE_URL%([^/"]+)\/">([^<]+)<\/a>/gu)];
     expect(linked.map((match) => match[1])).toEqual(EXAMPLES.map((example) => example.dir));
     // The label too: `e2e/examples.spec.ts` asserts this text against the same list at runtime, and
     // catching a rename here costs milliseconds instead of a browser launch. `&` is escaped in the

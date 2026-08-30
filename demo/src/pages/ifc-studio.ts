@@ -49,7 +49,10 @@ import { loadIfcModel, type IfcModel } from '../shared/ifcModel';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MODEL_ID = 'duplex';
-const MODEL_URL = '/models/Duplex_A_20110907.ifc';
+// Built from the base rather than rooted at `/`: this is a runtime fetch, so no bundler rewrites it,
+// and the gallery is served from a subpath on GitHub Pages. `BASE_URL` already carries its trailing
+// slash and is `/` for every local command.
+const MODEL_URL = `${import.meta.env.BASE_URL}models/Duplex_A_20110907.ifc`;
 const ROUTING_MODES = ['dogleg', 'straight', 'orthogonal'] as const;
 // A hand-bent leg is `{ kind: 'manual', vertices }` and carries no `mode`, so the routing box needs a
 // fourth word to stay honest about a leg a dragged route grip bent by hand. Not a real mode: it is

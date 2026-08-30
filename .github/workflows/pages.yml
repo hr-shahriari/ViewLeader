@@ -1,0 +1,68 @@
+# Publishes the example gallery to GitHub Pages.
+#
+# The demo is a static multi-page Vite app, so this is a plain build-and-upload — no server, and
+# deliberately no cross-origin isolation headers, which Pages cannot set anyway: `demo/src/ifc-worker.ts`
+# runs web-ifc single-threaded precisely so the gallery needs no SharedArrayBuffer.
+#
+# `DEMO_BASE` is the one thing that differs from a local build. A project repo is served from
+# `https://<owner>.github.io/<repo>/`, so every URL the demo emits has to carry that prefix; locally
+# the base stays `/` and nothing about `npm run dev:demo`, `preview` or the Playwright suite changes.
+name: Deploy demo to Pages
+
+on:
+  push:
+    branches: [main]
+  # So a deploy can be re-run without an empty commit — useful the first time, before Pages has ever
+  # published and the environment URL does not exist yet.
+  workflow_dispatch:
+
+# Read the repo, mint the OIDC token `deploy-pages` exchanges for its deployment credential.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One live deploy at a time. Queued rather than cancelled: cancelling mid-publish can leave the site
+# serving a half-uploaded artifact.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` from the lockfile, and the root install covers the demo too — it is an npm workspace.
+      - run: npm ci
+
+      # The demo imports `viewleader` the way a consumer does, and the workspace link resolves that to
+      # `dist/`. Without this the build fails on a package that has never been compiled.
+      - run: npm run build
+
+      - name: Build the gallery
+        env:
+          DEMO_BASE: /${{ github.event.repository.name }}/
+        run: npm run build:demo
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
