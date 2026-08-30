@@ -19,8 +19,9 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest   # trusted publishing needs npm >= 11.5.1
       - run: npm ci
-      - run: npm run typecheck
+      # build first: demo typecheck and the package-boundary test both read dist/
       - run: npm run build
+      - run: npm run typecheck
       - run: npm test
       - name: Check tag matches package.json version
         run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
