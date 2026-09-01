@@ -176,9 +176,10 @@ describe('handle enumeration', () => {
       geometry.handles.length + geometry.routeHandles.length + geometry.regionHandles.length,
     );
     // One arrow handle per leg, and both legs contribute route handles.
-    expect(entries.filter((e) => e.kind === 'handle').map((e) => e.legId)).toEqual(['left', 'right']);
-    expect(new Set(entries.filter((e) => e.kind === 'midpoint').map((e) => e.legId)))
-      .toEqual(new Set(['left', 'right']));
+    expect(entries.filter((e) => e.kind === 'handle').map((e) => e.key))
+      .toEqual(['handle:a1:left', 'handle:a1:right']);
+    expect(entries.filter((e) => e.kind === 'midpoint').map((e) => e.key))
+      .toEqual(expect.arrayContaining(['route:a1:left:midpoint:0', 'route:a1:right:midpoint:0']));
     harness.dispose();
   });
 
@@ -188,9 +189,9 @@ describe('handle enumeration', () => {
     harness.leader.update();
     const entries = harness.controllerFor('a1').getSnapshot();
 
-    const firstMidpoints = entries.filter((e) => e.kind === 'midpoint' && e.index === 0);
+    const firstMidpoints = entries.filter((e) => e.kind === 'midpoint' && e.key.endsWith(':midpoint:0'));
     expect(firstMidpoints).toHaveLength(2);
-    // `kind + index` collides; the key carries the leg, so it does not.
+    // Kind and ordinal collide; the key carries the leg, so it does not.
     expect(new Set(firstMidpoints.map((e) => e.key)).size).toBe(2);
     // And every key in the whole set is unique.
     expect(new Set(entries.map((e) => e.key)).size).toBe(entries.length);
@@ -214,7 +215,7 @@ describe('handle enumeration', () => {
 
     expect(entries).toHaveLength(harness.leader.geometry.ofInk('ink-1')!.points.length);
     expect(entries.every((e) => e.kind === 'ink-point')).toBe(true);
-    expect(entries.map((e) => e.slot)).toEqual(entries.map((e) => e.index));
+    expect(entries.map((e) => e.key)).toEqual(entries.map((_e, index) => `ink:ink-1:${index}`));
     harness.dispose();
   });
 
@@ -325,8 +326,8 @@ describe('drag routing', () => {
     const { controller } = fakeController(host);
     for (const handle of controller.getSnapshot()) handle.props.onPointerDown(pointerAt(0, 0));
 
-    // `slot` is the position inside the handle's own geometry array, not inside the flat list —
-    // that is what every `begin*Drag` takes.
+    // The index handed over is the position inside the handle's own geometry array, not inside the
+    // flat list — that is what every `begin*Drag` takes.
     expect(host.calls).toEqual([
       ['beginHandleDrag', 'a1', 0],
       ['beginRouteHandleDrag', 'a1', 0],
@@ -354,7 +355,7 @@ describe('drag routing', () => {
     // Raw client pixels; `beginRouteHandleDrag` validates 0..1 and throws on anything else.
     expect(() => vertex.props.onPointerDown(pointerAt(450, 340))).not.toThrow();
     expect(harness.leader.editing.getSnapshot()).toMatchObject({ phase: 'pressed', target: 'a1' });
-    harness.leader.editing.cancel('host');
+    harness.leader.editing.cancel();
     harness.dispose();
   });
 });
@@ -374,7 +375,8 @@ describe('the frozen handle set', () => {
     const liveBefore = harness.leader.geometry.of('a1')!.routeHandles.length;
     const grabbed = entry(before, 'route:a1:leg-1:midpoint:0');
 
-    const grabbedAt = harness.leader.geometry.of('a1')!.routeHandles[grabbed.slot]!.at;
+    const grabbedAt = harness.leader.geometry.of('a1')!.routeHandles
+      .find((handle) => handle.kind === 'midpoint' && handle.index === 0)!.at;
     grabbed.props.onPointerDown(pointerAt(grabbedAt.x, grabbedAt.y));
     grabbed.props.onPointerMove(pointerAt(200, 150));
     harness.leader.update();

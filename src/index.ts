@@ -33,7 +33,6 @@ export type {
   ScreenHitKind,
 } from './render.js';
 export type {
-  EditingCancellationReason,
   EditingDragKind,
   EditingOptions,
   EditingSnapshot,

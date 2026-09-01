@@ -55,15 +55,7 @@ import { revisionCache } from './internal/snapshot-cache.js';
 export const DRAG_THRESHOLD_PX = 3;
 
 /** How near the pointer has to be to a leader line to grab it. About a comfortable line width. */
-export const LEADER_HIT_TOLERANCE_PX = 6;
-
-export type EditingCancellationReason =
-  | 'host'
-  | 'escape'
-  | 'preempted'
-  | 'pointer-exit'
-  | 'document-replaced'
-  | 'disposed';
+const LEADER_HIT_TOLERANCE_PX = 6;
 
 /**
  * What a drag is moving.
@@ -199,6 +191,9 @@ interface ActiveDrag {
   readonly grab: Vec2 | undefined;
 }
 
+/** What a drag's own lookup contributes; `#begin` supplies the press position and the lease. */
+type DragSpec = Pick<ActiveDrag, 'id' | 'kind' | 'start'> & Partial<Omit<ActiveDrag, 'origin' | 'lease'>>;
+
 /**
  * A selection box being dragged across the screen.
  *
@@ -225,7 +220,8 @@ export class EditingController {
   readonly #markup: () => MarkupAuthoringCapability;
   readonly #listeners = new Set<() => void>();
   readonly #snapshotCache = revisionCache<EditingSnapshot>();
-  readonly #cleanup: (() => void)[] = [];
+  /** Every DOM listener is bound to this signal, so disposing is one `abort()`. */
+  readonly #abort = new AbortController();
   readonly #documentUnsubscribe: Unsubscribe;
   readonly #toolActive: () => boolean;
   readonly #gestures: boolean;
@@ -252,8 +248,8 @@ export class EditingController {
       // The document has been replaced underneath the drag, and the annotation being dragged may
       // not exist any more. There is nowhere for it to land, so the gesture is abandoned.
       if (commit.kind === 'replacement') {
-        this.#finish('document-replaced');
-        this.#cancelMarquee('document-replaced');
+        this.#finish();
+        this.#cancelMarquee();
       }
     });
     if (this.#gestures) this.#connectInput();
@@ -312,8 +308,8 @@ export class EditingController {
     // Left button only. A right-click belongs to the host's context menu, and taking over the
     // pointer before its own handler has even run would mean quietly stealing a gesture.
     if (pointer.button !== 0) return;
-    if (this.#active !== undefined) this.#finish('preempted');
-    if (this.#marquee !== undefined) this.#cancelMarquee('preempted');
+    if (this.#active !== undefined) this.#finish();
+    if (this.#marquee !== undefined) this.#cancelMarquee();
     const at = this.#screen(pointer);
     const hit = this.#runtime.hitTest(at, LEADER_HIT_TOLERANCE_PX);
     // A press on empty space draws a selection box. Refusing has to happen before the pointer is
@@ -341,29 +337,26 @@ export class EditingController {
     }
     // Grabbing a region's outline moves the region, just as grabbing a leader moves its label.
     if (hit.kind === 'region') {
-      this.#beginRegionDrag(hit.id, hit.legId ?? '', 'region', pointer);
+      this.#begin(pointer, (at) => this.#regionDrag(hit.id, hit.legId ?? '', 'region', at));
       return;
     }
     if (hit.kind === 'ink') {
-      this.#beginInkDrag(hit.id, 'ink', pointer);
+      this.#begin(pointer, (at) => {
+        const ink = this.#markup().getInk(hit.id);
+        return ink === undefined ? undefined : { id: hit.id, kind: 'ink', start: at, baseInk: ink };
+      });
       return;
     }
     if (hit.kind === 'ink-point') {
       this.beginInkPointDrag(hit.id, hit.index ?? -1, pointer);
       return;
     }
-    const geometry = this.#runtime.geometryOf(hit.id);
-    if (geometry === undefined) return;
-    const lease = this.#acquire();
-    if (lease === null) return;
     // Dragging a leader line moves the whole annotation. The line has no position of its own — it
     // is drawn between two things — so the only thing it can move is the label at its end.
-    this.#start({
-      id: hit.id,
-      kind: 'label',
-      origin: at,
-      start: { x: geometry.label.x, y: geometry.label.y },
-      lease,
+    this.#begin(pointer, () => {
+      const geometry = this.#runtime.geometryOf(hit.id);
+      if (geometry === undefined) return undefined;
+      return { id: hit.id, kind: 'label', start: { x: geometry.label.x, y: geometry.label.y } };
     });
   }
 
@@ -372,77 +365,65 @@ export class EditingController {
    * polygon. This is the entry point a host needs when drawing the handles itself.
    */
   public beginRegionHandleDrag(id: string, index: number, pointer: NormalizedPointerInput): void {
-    validatePointer(pointer);
-    const handle = this.#runtime.geometryOf(id)?.regionHandles[index];
-    if (handle === undefined) return;
-    this.#beginRegionDrag(id, handle.target, regionDragKind(handle), pointer, handle);
+    this.#begin(pointer, (at) => {
+      const handle = this.#runtime.geometryOf(id)?.regionHandles[index];
+      return handle === undefined
+        ? undefined
+        : this.#regionDrag(id, handle.target, regionDragKind(handle), at, handle);
+    });
   }
 
   /** Starts dragging one point of a freehand stroke. */
   public beginInkPointDrag(id: string, index: number, pointer: NormalizedPointerInput): void {
-    validatePointer(pointer);
-    const at = this.#runtime.geometryOfInk(id)?.points[index];
-    if (at === undefined) return;
-    this.#beginInkDrag(id, 'ink-point', pointer, index);
+    this.#begin(pointer, (at) => {
+      if (this.#runtime.geometryOfInk(id)?.points[index] === undefined) return undefined;
+      const ink = this.#markup().getInk(id);
+      return ink === undefined
+        ? undefined
+        : { id, kind: 'ink-point', start: at, baseInk: ink, vertexIndex: index };
+    });
   }
 
   /**
    * Region drags all share a shape: resolve the stored anchor once, keep it as the base every move
    * recomputes from, and let the handle say which part of it moves.
    */
-  #beginRegionDrag(
+  #regionDrag(
     id: string,
     legId: string,
     kind: EditingDragKind,
-    pointer: NormalizedPointerInput,
+    at: Vec2,
     handle?: RegionHandle,
-  ): void {
-    if (this.#disposed || this.#toolActive()) return;
-    if (this.#active !== undefined) this.#finish('preempted');
+  ): DragSpec | undefined {
     const leg = this.#document.get(id)?.anchors.find((candidate) => candidate.id === legId);
-    if (leg?.anchor.kind !== 'region') return;
-    const lease = this.#acquire();
-    if (lease === null) return;
-    const at = this.#screen(pointer);
-    this.#start({
+    if (leg?.anchor.kind !== 'region') return undefined;
+    return {
       id,
       kind,
       legId,
-      origin: at,
       start: handle === undefined ? at : { ...handle.at },
-      lease,
       baseRegion: regionAnchorFromCore(leg.anchor),
       ...(handle?.kind === 'extent' ? { grab: handle.grab } : {}),
       ...(handle?.kind === 'vertex' ? { vertexIndex: handle.index } : {}),
       ...(handle?.kind === 'midpoint' ? { insertAt: handle.index } : {}),
-    });
+    };
   }
 
-  #beginInkDrag(
-    id: string,
-    kind: EditingDragKind,
-    pointer: NormalizedPointerInput,
-    index?: number,
-  ): void {
+  /**
+   * Every drag starts the same way: refuse while disposed or a tool is active, pre-empt whatever
+   * gesture was running, resolve what is being grabbed, take the interaction lease, and only then
+   * record the press. `resolve` is the one step that differs per kind — `undefined` from it means
+   * nothing is under that index, and the press is ignored.
+   */
+  #begin(pointer: NormalizedPointerInput, resolve: (at: Vec2) => DragSpec | undefined): void {
+    validatePointer(pointer);
     if (this.#disposed || this.#toolActive()) return;
-    if (this.#active !== undefined) this.#finish('preempted');
-    const ink = this.#markup().getInk(id);
-    if (ink === undefined) return;
+    if (this.#active !== undefined) this.#finish();
+    const at = this.#screen(pointer);
+    const drag = resolve(at);
+    if (drag === undefined) return;
     const lease = this.#acquire();
     if (lease === null) return;
-    const at = this.#screen(pointer);
-    this.#start({
-      id,
-      kind,
-      origin: at,
-      start: at,
-      lease,
-      baseInk: ink,
-      ...(index === undefined ? {} : { vertexIndex: index }),
-    });
-  }
-
-  #start(drag: Pick<ActiveDrag, 'id' | 'kind' | 'origin' | 'start' | 'lease'> & Partial<ActiveDrag>): void {
     this.#active = {
       legId: undefined,
       preview: undefined,
@@ -453,7 +434,9 @@ export class EditingController {
       baseRegion: undefined,
       baseInk: undefined,
       grab: undefined,
+      origin: at,
       ...drag,
+      lease,
     };
     this.#publish(false);
   }
@@ -466,22 +449,17 @@ export class EditingController {
    * press cannot find one and the host has to start the gesture. Behaves the same either way.
    */
   public beginHandleDrag(id: string, index: number, pointer: NormalizedPointerInput): void {
-    validatePointer(pointer);
-    if (this.#disposed || this.#toolActive()) return;
-    if (this.#active !== undefined) this.#finish('preempted');
-    const handle = this.#runtime.geometryOf(id)?.handles[index];
-    if (handle === undefined) return;
-    const lease = this.#acquire();
-    if (lease === null) return;
-    this.#start({
-      id,
-      kind: 'handle',
-      legId: handle.target,
-      origin: this.#screen(pointer),
-      // Measured from where the handle is, not from where the pointer grabbed it. Otherwise
-      // catching a handle slightly off-centre would jerk it by that much on the first movement.
-      start: { x: handle.at.x, y: handle.at.y },
-      lease,
+    this.#begin(pointer, () => {
+      const handle = this.#runtime.geometryOf(id)?.handles[index];
+      if (handle === undefined) return undefined;
+      return {
+        id,
+        kind: 'handle',
+        legId: handle.target,
+        // Measured from where the handle is, not from where the pointer grabbed it. Otherwise
+        // catching a handle slightly off-centre would jerk it by that much on the first movement.
+        start: { x: handle.at.x, y: handle.at.y },
+      };
     });
   }
 
@@ -490,31 +468,25 @@ export class EditingController {
    * The entry point a host needs when drawing the handles itself.
    */
   public beginRouteHandleDrag(id: string, index: number, pointer: NormalizedPointerInput): void {
-    validatePointer(pointer);
-    if (this.#disposed || this.#toolActive()) return;
-    if (this.#active !== undefined) this.#finish('preempted');
-    const handle = this.#runtime.geometryOf(id)?.routeHandles[index];
-    if (handle === undefined) return;
-    const annotation = this.#document.get(id);
-    const routing = annotation?.anchors.find((leg) => leg.id === handle.target)?.routing;
-    if (routing === undefined) return;
-    const lease = this.#acquire();
-    if (lease === null) return;
-    this.#start({
-      id,
-      kind: handle.kind,
-      legId: handle.target,
-      origin: this.#screen(pointer),
-      start: { x: handle.at.x, y: handle.at.y },
-      lease,
-      // There is no bend here yet. The first movement creates one and fills this in.
-      ...(handle.kind === 'vertex' ? { vertexIndex: handle.index } : { insertAt: handle.index }),
-      baseRoute: routing.kind === 'manual'
-        ? { mode: 'manual', vertices: routing.vertices.map((vertex) => ({ ...vertex })) }
-        // A leader that was routing itself has no bends to keep, so the first one dragged in is
-        // the only one. That does change the line's shape on that first drag — it stops routing
-        // itself and becomes hand-drawn. `resetRouting` puts it back.
-        : { mode: 'manual', vertices: [] },
+    this.#begin(pointer, () => {
+      const handle = this.#runtime.geometryOf(id)?.routeHandles[index];
+      if (handle === undefined) return undefined;
+      const routing = this.#document.get(id)?.anchors.find((leg) => leg.id === handle.target)?.routing;
+      if (routing === undefined) return undefined;
+      return {
+        id,
+        kind: handle.kind,
+        legId: handle.target,
+        start: { x: handle.at.x, y: handle.at.y },
+        // There is no bend here yet. The first movement creates one and fills this in.
+        ...(handle.kind === 'vertex' ? { vertexIndex: handle.index } : { insertAt: handle.index }),
+        baseRoute: routing.kind === 'manual'
+          ? { mode: 'manual', vertices: routing.vertices.map((vertex) => ({ ...vertex })) }
+          // A leader that was routing itself has no bends to keep, so the first one dragged in is
+          // the only one. That does change the line's shape on that first drag — it stops routing
+          // itself and becomes hand-drawn. `resetRouting` puts it back.
+          : { mode: 'manual', vertices: [] },
+      };
     });
   }
 
@@ -698,7 +670,7 @@ export class EditingController {
     // Too small to be a drag, so it was a click. The renderer already handles selection on click,
     // and doing it here as well would toggle a shift-click twice and cancel itself out.
     if (position === undefined) {
-      this.#finish('host');
+      this.#finish();
       return;
     }
     if (active.kind === 'handle') {
@@ -715,7 +687,7 @@ export class EditingController {
           'Reroute annotation',
         );
       } finally {
-        this.#finish('host');
+        this.#finish();
       }
       return;
     }
@@ -751,7 +723,7 @@ export class EditingController {
         'Move annotation',
       );
     } finally {
-      this.#finish('host');
+      this.#finish();
     }
   }
 
@@ -790,12 +762,12 @@ export class EditingController {
     if (anchor === null) {
       // Dropped on empty space. Putting it back is the honest answer — there is no position to
       // move it to, and inventing one would attach the note to nothing.
-      this.#finish('host');
+      this.#finish();
       return;
     }
     try {
       this.#document.update(active.id, this.#retargetPatch(active, anchor), 'Retarget annotation');
-      this.#finish('host');
+      this.#finish();
     } catch (cause) {
       this.#report(active, cause instanceof Error ? cause : new InvalidInputError('Retarget failed'));
     }
@@ -830,7 +802,7 @@ export class EditingController {
     }
     if (this.#active !== active || controller.signal.aborted) return;
     if (surface === null) {
-      this.#finish('host');
+      this.#finish();
       return;
     }
     this.#commit(active, () => {
@@ -894,7 +866,7 @@ export class EditingController {
   #commit(active: ActiveDrag, operation: () => void): void {
     try {
       operation();
-      this.#finish('host');
+      this.#finish();
     } catch (cause) {
       this.#report(active, cause instanceof Error ? cause : new InvalidInputError('The edit was refused'));
     }
@@ -985,7 +957,7 @@ export class EditingController {
   /** Ends the gesture and reports what went wrong, rather than throwing into the host's own
    *  pointer handler and taking it down. */
   #report(active: ActiveDrag, error: Error): void {
-    this.#finish('host');
+    this.#finish();
     this.#runtime.publishExternalDiagnostic({
       // A resize refused for being an impossible shape is not a host failure, and reporting it as
       // one would send someone debugging their picking adapter over a geometry problem.
@@ -996,9 +968,9 @@ export class EditingController {
     });
   }
 
-  public cancel(reason: EditingCancellationReason = 'host'): void {
-    this.#finish(reason);
-    this.#cancelMarquee(reason);
+  public cancel(): void {
+    this.#finish();
+    this.#cancelMarquee();
     this.#releaseCapture();
   }
 
@@ -1036,10 +1008,10 @@ export class EditingController {
   public dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#finish('disposed');
-    this.#cancelMarquee('disposed');
+    this.#finish(true);
+    this.#cancelMarquee(true);
     this.#documentUnsubscribe();
-    for (const cleanup of this.#cleanup.splice(0)) cleanup();
+    this.#abort.abort();
     // The element outlives this object, so the cursor has to be cleared along with the listeners
     // that set it. Otherwise disposing while the pointer rests on a label leaves the host stuck
     // with a move cursor forever.
@@ -1048,8 +1020,8 @@ export class EditingController {
   }
 
   /** Abandons the gesture. The document was never touched, so there is nothing to put back — which
-   *  is why cancelling costs no undo step. */
-  #finish(reason: EditingCancellationReason): void {
+   *  is why cancelling costs no undo step. `disposing` skips the re-render nobody would see. */
+  #finish(disposing = false): void {
     const active = this.#active;
     if (active === undefined) return;
     this.#active = undefined;
@@ -1060,7 +1032,7 @@ export class EditingController {
     this.#runtime.setRegionPreview(null);
     this.#runtime.setInkPreview(null);
     try { active.lease?.release(); } catch { /* lease ownership has still ended */ }
-    this.#publish(reason !== 'disposed');
+    this.#publish(!disposing);
   }
 
   /** Grows the selection box, subject to the same threshold a drag uses — a twitch on empty space
@@ -1081,13 +1053,13 @@ export class EditingController {
 
   /** Abandons the selection box and leaves the selection exactly as it was — escape, interruption
    *  and a replaced document all behave like an interrupted drag. */
-  #cancelMarquee(reason: EditingCancellationReason): void {
+  #cancelMarquee(disposing = false): void {
     const marquee = this.#marquee;
     if (marquee === undefined) return;
     this.#marquee = undefined;
     this.#runtime.setMarqueePreview(null);
     try { marquee.lease?.release(); } catch { /* lease ownership has still ended */ }
-    this.#publish(reason !== 'disposed');
+    this.#publish(!disposing);
   }
 
   /**
@@ -1158,7 +1130,7 @@ export class EditingController {
     // work. Uncaptured, an exit really does mean the gesture is gone, and cancelling is right.
     const leave = (): void => {
       if (this.#capturedPointer !== undefined) return;
-      this.cancel('pointer-exit');
+      this.cancel();
       // No `pointermove` follows the pointer out of the boundary, so nothing else re-evaluates the
       // hover cursor — without this, leaving while over a label strands the host with `move` until
       // `dispose`. Only the uncaptured branch: mid-drag the pointer leaves and returns as a matter
@@ -1169,27 +1141,20 @@ export class EditingController {
     };
     const lost = (): void => {
       this.#capturedPointer = undefined;
-      this.cancel('pointer-exit');
+      this.cancel();
     };
     const keyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || (this.#active === undefined && this.#marquee === undefined)) return;
       event.preventDefault();
-      this.cancel('escape');
+      this.cancel();
     };
-    this.#boundary.addEventListener('pointerdown', down);
-    this.#boundary.addEventListener('pointermove', move);
-    this.#boundary.addEventListener('pointerup', up);
-    this.#boundary.addEventListener('pointerleave', leave);
-    this.#boundary.addEventListener('lostpointercapture', lost);
-    this.#boundary.ownerDocument.addEventListener('keydown', keyDown);
-    this.#cleanup.push(
-      () => this.#boundary.removeEventListener('pointerdown', down),
-      () => this.#boundary.removeEventListener('pointermove', move),
-      () => this.#boundary.removeEventListener('pointerup', up),
-      () => this.#boundary.removeEventListener('pointerleave', leave),
-      () => this.#boundary.removeEventListener('lostpointercapture', lost),
-      () => this.#boundary.ownerDocument.removeEventListener('keydown', keyDown),
-    );
+    const { signal } = this.#abort;
+    this.#boundary.addEventListener('pointerdown', down, { signal });
+    this.#boundary.addEventListener('pointermove', move, { signal });
+    this.#boundary.addEventListener('pointerup', up, { signal });
+    this.#boundary.addEventListener('pointerleave', leave, { signal });
+    this.#boundary.addEventListener('lostpointercapture', lost, { signal });
+    this.#boundary.ownerDocument.addEventListener('keydown', keyDown, { signal });
   }
 
   #publish(render: boolean): void {
@@ -1269,7 +1234,8 @@ function applyMarqueeMode(
   return next;
 }
 
-function regionDragKind(handle: RegionHandle): EditingDragKind {
+/** Which region drag a region handle starts. Shared with `internal/handles.ts`. */
+export function regionDragKind(handle: RegionHandle): Extract<EditingDragKind, `region-${string}`> {
   return handle.kind === 'extent' ? 'region-extent' : `region-${handle.kind}`;
 }
 

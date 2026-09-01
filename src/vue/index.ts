@@ -17,14 +17,8 @@ import {
   ViewLeader,
   type ViewLeaderOptions,
 } from '../index.js';
-import {
-  BoundaryLifecycle,
-  CapabilitySubscription,
-  resolveVueSource,
-  type BoundaryOptions,
-  type MaybeVueSource,
-  type SnapshotSource,
-} from './core.js';
+import { resolveVueSource, type MaybeVueSource } from './core.js';
+import { CapabilitySubscription, type SnapshotSource } from '../internal/lifecycle.js';
 import { subscribeFrame } from '../internal/frame-seam.js';
 import {
   FollowRegistry,
@@ -43,10 +37,7 @@ import {
   type TextEditorCloseReason,
   type TextEditorSnapshot,
 } from '../internal/text-editor.js';
-import {
-  StyleEditor,
-  type StyleEditorOptions,
-} from '../internal/style-editor.js';
+import { StyleEditor } from '../internal/style-editor.js';
 import {
   TemplateDraft,
   type TemplateDraftOptions,
@@ -78,19 +69,16 @@ export function useViewLeader(
   const stop = watch(
     boundary,
     (element, _previous, onCleanup) => {
-      // Same rule as the React binding, from the same class: the element is the identity, and
-      // `BoundaryLifecycle` decides whether that means keep or rebuild. One per watch run, because
-      // `dispose()` is terminal.
-      const lifecycle = new BoundaryLifecycle<VueViewLeaderOptions & BoundaryOptions, ViewLeader>(
-        (resolved) => new ViewLeader(resolved),
-      );
-      const instance = lifecycle.update({
-        ...resolveVueSource(optionsSource),
-        boundary: element,
-      });
+      if (element === null) {
+        viewLeader.value = null;
+        return;
+      }
+      // Same rule as the React binding: the element is the identity, one instance per element,
+      // disposed when the element goes.
+      const instance = new ViewLeader({ ...resolveVueSource(optionsSource), boundary: element });
       viewLeader.value = instance;
       onCleanup(() => {
-        lifecycle.dispose();
+        instance.dispose();
         if (viewLeader.value === instance) viewLeader.value = null;
       });
     },
@@ -296,18 +284,12 @@ export function useEditingKeyboard(
  */
 export function useStyleEditor(
   viewLeaderSource: MaybeVueSource<ViewLeader | null | undefined>,
-  options: StyleEditorOptions = {},
 ): Readonly<ShallowRef<StyleEditor | null>> {
   const editor = shallowRef<StyleEditor | null>(null);
   const stop = watch(
     () => resolveVueSource(viewLeaderSource) ?? null,
     (viewLeader) => {
-      editor.value = viewLeader === null
-        ? null
-        : new StyleEditor(
-          { annotations: viewLeader.annotations, history: viewLeader.history },
-          options,
-        );
+      editor.value = viewLeader === null ? null : new StyleEditor(viewLeader);
     },
     { immediate: true, flush: 'sync' },
   );
@@ -479,19 +461,6 @@ export const LabelTextEditor = defineComponent({
   },
 });
 
-export {
-  TextEditorController,
-  isMultilineField,
-  primaryTextField,
-  readTextField,
-  writeTextField,
-  type EditableTextField,
-  type OpenTextEditorOptions,
-  type TextEditorCloseReason,
-  type TextEditorProps,
-  type TextEditorSnapshot,
-} from '../internal/text-editor.js';
-
 /**
  * Your own drag handles for one annotation — the Vue counterpart of the React hook.
  *
@@ -578,41 +547,4 @@ export interface VueHandlesBinding {
   ref(entry: HandleEntry): (element: VueRefTarget) => void;
 }
 
-export {
-  HandlesController,
-  type HandleEntry,
-  type HandleKind,
-  type HandlePointerProps,
-  type HandlesTarget,
-} from '../internal/handles.js';
-
-export { EditingKeyboard, type EditingKeyboardOptions } from '../internal/keyboard.js';
-export {
-  StyleEditor,
-  type SelectionValue,
-  type StyleEditorLabels,
-  type StyleEditorOptions,
-  type StyleEditorSnapshot,
-  type StyleField,
-  type StyleFieldState,
-} from '../internal/style-editor.js';
-export {
-  TemplateDraft,
-  captureTemplateDefaults,
-  type TemplateCaptureOptions,
-  type TemplateCaptureResult,
-  type TemplateCaptureSource,
-  type TemplateDraftIssue,
-  type TemplateDraftOptions,
-  type TemplateDraftPatch,
-  type TemplateDraftSnapshot,
-} from '../internal/template-draft.js';
-
-export type { SnapshotSource } from './core.js';
-export {
-  FollowRegistry,
-  followTargetKey,
-  type FollowMissingBehaviour,
-  type FollowOptions,
-  type FollowTarget,
-} from '../internal/follow.js';
+export * from '../internal/host-toolkit.js';

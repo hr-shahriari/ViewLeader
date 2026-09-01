@@ -14,7 +14,7 @@ import {
   ViewLeader,
   type ViewLeaderOptions,
 } from '../index.js';
-import { BoundaryLifecycle, type BoundaryOptions, type SnapshotSource } from './core.js';
+import type { SnapshotSource } from '../internal/lifecycle.js';
 import { subscribeFrame } from '../internal/frame-seam.js';
 import { FollowRegistry } from '../internal/follow.js';
 import {
@@ -28,11 +28,7 @@ import {
   type TextEditorSnapshot,
 } from '../internal/text-editor.js';
 import { EditingKeyboard, type EditingKeyboardOptions } from '../internal/keyboard.js';
-import {
-  StyleEditor,
-  type StyleEditorOptions,
-  type StyleEditorSnapshot,
-} from '../internal/style-editor.js';
+import { StyleEditor, type StyleEditorSnapshot } from '../internal/style-editor.js';
 import {
   TemplateDraft,
   type TemplateDraftOptions,
@@ -72,17 +68,16 @@ export function useViewLeader(
   }, []);
 
   useEffect(() => {
-    // `BoundaryLifecycle` owns the identity rule — the element itself decides whether this is still
-    // the same viewer — so the effect only has to say *when* to ask, never what the answer is. One
-    // lifecycle per mount, because `dispose()` is terminal and a development double-mount must not
-    // find a dead one waiting for it.
-    const lifecycle = new BoundaryLifecycle<ReactViewLeaderOptions & BoundaryOptions, ViewLeader>(
-      (resolved) => new ViewLeader(resolved),
-    );
-    const instance = lifecycle.update({ ...latestOptions.current, boundary });
+    if (boundary === null) {
+      setViewLeader(null);
+      return undefined;
+    }
+    // The element is the identity: one instance per mounted element, disposed when it goes, so a
+    // re-render cannot leak a second overlay and a development double-mount builds its own.
+    const instance = new ViewLeader({ ...latestOptions.current, boundary });
     setViewLeader(instance);
     return () => {
-      lifecycle.dispose();
+      instance.dispose();
       setViewLeader((current) => (current === instance ? null : current));
     };
   }, [boundary]);
@@ -242,10 +237,7 @@ export function useTemplateDraftSnapshot(
  */
 export function useStyleEditor(
   viewLeader: ViewLeader | null | undefined,
-  options: StyleEditorOptions = {},
 ): StyleEditor | null {
-  const latestOptions = useRef(options);
-  latestOptions.current = options;
   const [editor, setEditor] = useState<StyleEditor | null>(null);
 
   useEffect(() => {
@@ -253,10 +245,7 @@ export function useStyleEditor(
       setEditor(null);
       return undefined;
     }
-    const instance = new StyleEditor(
-      { annotations: viewLeader.annotations, history: viewLeader.history },
-      latestOptions.current,
-    );
+    const instance = new StyleEditor(viewLeader);
     setEditor(instance);
     return () => { setEditor((current) => (current === instance ? null : current)); };
   }, [viewLeader]);
@@ -424,51 +413,4 @@ function nullSnapshot(): null {
   return null;
 }
 
-export type { SnapshotSource } from './core.js';
-export { EditingKeyboard, type EditingKeyboardOptions } from '../internal/keyboard.js';
-export {
-  HandlesController,
-  type HandleEntry,
-  type HandleKind,
-  type HandlePointerProps,
-  type HandlesTarget,
-} from '../internal/handles.js';
-export {
-  TextEditorController,
-  isMultilineField,
-  primaryTextField,
-  readTextField,
-  writeTextField,
-  type EditableTextField,
-  type OpenTextEditorOptions,
-  type TextEditorCloseReason,
-  type TextEditorProps,
-  type TextEditorSnapshot,
-} from '../internal/text-editor.js';
-export {
-  StyleEditor,
-  type SelectionValue,
-  type StyleEditorLabels,
-  type StyleEditorOptions,
-  type StyleEditorSnapshot,
-  type StyleField,
-  type StyleFieldState,
-} from '../internal/style-editor.js';
-export {
-  TemplateDraft,
-  captureTemplateDefaults,
-  type TemplateCaptureOptions,
-  type TemplateCaptureResult,
-  type TemplateCaptureSource,
-  type TemplateDraftIssue,
-  type TemplateDraftOptions,
-  type TemplateDraftPatch,
-  type TemplateDraftSnapshot,
-} from '../internal/template-draft.js';
-export {
-  FollowRegistry,
-  followTargetKey,
-  type FollowMissingBehaviour,
-  type FollowOptions,
-  type FollowTarget,
-} from '../internal/follow.js';
+export * from '../internal/host-toolkit.js';
