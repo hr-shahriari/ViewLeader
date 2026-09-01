@@ -14,20 +14,10 @@
  * for the implementation to have gamed than one I tuned by eye. Recorded so the difference is
  * visible rather than glossed over.
  *
- * Pure numbers, no `viewleader`, for the same reason as `crowdedScene.ts`.
+ * Pure numbers, nothing from `viewleader` but a type, for the same reason as `crowdedScene.ts`.
  */
-import type { CrowdedExtra, CrowdedNote, Vec3Like } from './crowdedScene';
-
-function mulberry32(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+import type { Vec3 } from 'viewleader';
+import { mulberry32, type CrowdedExtra, type CrowdedNote } from './crowdedScene';
 
 /**
  * Chosen by search, not by me. Forty candidate seeds were scored against the CURRENT implementation
@@ -68,7 +58,7 @@ export function adversarialScene(
   seed: number = ADVERSARIAL_SCENE_SEED,
 ): readonly CrowdedNote[] {
   const random = mulberry32(seed);
-  const clusters: readonly Vec3Like[] = [
+  const clusters: readonly Vec3[] = [
     { x: -2.2, y: 3.8, z: 3.05 },
     { x: 3.05, y: 1.2, z: -1.4 },
     { x: 1.6, y: 0.3, z: 3.05 },

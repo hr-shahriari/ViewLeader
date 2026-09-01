@@ -15,23 +15,21 @@
 //      `marquee` mode set below, shift- or alt-drag → rubber band. A second host-side toggle would
 //      double-toggle and cancel itself out, so nothing here touches either.
 //
+// The host-side widgets — the raycast, tool arming, the authoring preview, the text field and the
+// key bindings — are the same ones `/ifc-studio/` and `/host-chrome/` use, out of
+// `shared/leaderTools.ts`.
+//
 // The boundary is #viewport, not the harness overlay div: the overlay is `pointer-events: none`, so
 // listeners on it would only ever fire over an annotation. Same reasoning as `/direct-editing/`.
 import {
   ViewLeader,
   type AlignEdge,
-  type AnnotationContent,
   type AnnotationDraft,
   type AnnotationRouting,
-  type CalloutContent,
-  type PlainNoteContent,
-  type SurfacePickResult,
-  type TagContent,
   type Vec2,
   type Vec3,
 } from 'viewleader';
 import { createThreeAdapter } from 'viewleader/three';
-import * as THREE from 'three';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
@@ -41,9 +39,17 @@ import {
   markExampleFailed,
   markExampleReady,
 } from '../shared/harness';
+import {
+  appendLeg,
+  bindEditingKeys,
+  createStatusLine,
+  createSurfacePicker,
+  createTextEditor,
+  createToolArmer,
+  mountAuthoringPreview,
+} from '../shared/leaderTools';
 import { MOCK_ELEMENTS, SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
 const STORAGE_KEY = 'viewleader:leader-editor';
 const ROUTING_MODES = ['dogleg', 'straight', 'orthogonal'] as const;
 // A hand-bent leg is `{ kind: 'manual', vertices }` and carries no `mode`, so the routing box needs a
@@ -65,28 +71,10 @@ try {
   // cursor" — it resolves a new leader's arrow and a dropped anchor grip. `pickSurface` answers the
   // same plus the surface normal, which is what a region or ink stroke needs to establish the
   // drawing plane it is then stored in. An anchor carries no normal, so `pick` cannot stand in.
-  const raycaster = new THREE.Raycaster();
-  const normalMatrix = new THREE.Matrix3();
-  const castAt = (pointer: Vec2): THREE.Intersection | undefined => {
-    raycaster.setFromCamera(new THREE.Vector2(pointer.x * 2 - 1, 1 - pointer.y * 2), harness.camera);
-    return raycaster.intersectObject(building.root, true)[0];
-  };
-
+  const { castAt, pickSurface } = createSurfacePicker(harness.camera, () => building.root);
   const pick = (pointer: Vec2): { kind: 'world-point'; point: Vec3 } | null => {
     const hit = castAt(pointer);
     return hit === undefined ? null : { kind: 'world-point', point: { ...hit.point } };
-  };
-
-  const pickSurface = (pointer: Vec2): SurfacePickResult | null => {
-    const hit = castAt(pointer);
-    const face = hit?.face;
-    if (hit === undefined || face === undefined || face === null) return null;
-    // Face normals are object-local; the plane has to be world-space or the geometry drawn on it
-    // lands somewhere else entirely.
-    const normal = face.normal.clone()
-      .applyNormalMatrix(normalMatrix.getNormalMatrix(hit.object.matrixWorld))
-      .normalize();
-    return { point: { ...hit.point }, normal: { x: normal.x, y: normal.y, z: normal.z } };
   };
 
   const leader = new ViewLeader({
@@ -133,21 +121,8 @@ try {
   ];
   for (const draft of seed) leader.annotations.create(draft);
 
-  // --- One writer for the status line -------------------------------------------------------------
-  // The live counts change on every document event, and actions want to say what they just did. Two
-  // writers on one line race: whichever fires last wins, and after an async tool that is the counts.
-  // So there is one render, and it keeps the last thing an action said.
-  let lastAction = '';
-  const render = (): void => {
-    const { selectedIds, annotations } = leader.annotations.getSnapshot();
-    const { undoCount, redoCount } = leader.history.getSnapshot();
-    const state = `${annotations.length} leaders · ${selectedIds.length} selected · ${undoCount} undo / ${redoCount} redo`;
-    controls.status(lastAction === '' ? state : `${lastAction} · ${state}`);
-  };
-  const say = (message: string): void => {
-    lastAction = message;
-    render();
-  };
+  // One writer for the status line: the live counts, keeping the last thing an action said.
+  const { render, say } = createStatusLine(leader, (text) => controls.status(text));
 
   // No `requireSelection` twin that complains after the fact: every control that needs a selection is
   // disabled without one by `syncControls`, so "select a leader first" is said by the greyed-out
@@ -159,49 +134,8 @@ try {
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
   };
 
-  // --- Arming a tool ------------------------------------------------------------------------------
-  // Every tool is one-shot: core resolves the same promise whether it completed, was cancelled with
-  // Escape, lost the pointer off the viewport, or failed. So the toolbar disarms in exactly one
-  // place and there is no mode variable to leak.
-  let armed: HTMLButtonElement | undefined;
-  const arm = (button: HTMLButtonElement | undefined): void => {
-    armed?.setAttribute('aria-pressed', 'false');
-    armed = button;
-    button?.setAttribute('aria-pressed', 'true');
-  };
-
-  type ToolOutcome =
-    | { readonly status: 'completed' }
-    | { readonly status: 'cancelled'; readonly reason: string }
-    | { readonly status: 'failed'; readonly error: { readonly message: string } };
-
-  const tool = (
-    label: string,
-    hint: string,
-    run: () => Promise<ToolOutcome>,
-  ): void => {
-    const button = controls.button(label, async () => {
-      if (armed === button) {
-        // A second press on the armed tool is "never mind" — the same exit Escape takes.
-        leader.authoring.cancel();
-        leader.authoring.markup.cancel();
-        return;
-      }
-      arm(button);
-      say(hint);
-      const outcome = await run();
-      arm(undefined);
-      // Never console.error: a cancelled tool is an ordinary outcome, not a fault. Core's own
-      // message is the useful one — "No model surface was found at that point" tells the user to
-      // aim at the building, where a bare "failed" would not.
-      say(
-        outcome.status === 'completed' ? `${label}: created. Ctrl/⌘+Z undoes it.`
-        : outcome.status === 'failed' ? `${label}: ${outcome.error.message}`
-        : `${label}: cancelled (${outcome.reason})`,
-      );
-    });
-    button.setAttribute('aria-pressed', 'false');
-  };
+  // Every tool is one-shot, and the armer disarms in exactly one place whatever the outcome.
+  const tool = createToolArmer(leader, say, (label, action) => controls.button(label, action));
 
   // --- Creating a leader --------------------------------------------------------------------------
   // The draft carries everything except the anchor; the anchor comes from `pick` when the user
@@ -257,50 +191,16 @@ try {
     });
   });
 
-  // --- The live multi-point route -----------------------------------------------------------------
-  // Core publishes `preview.vertices` and `preview.livePoint` already in screen pixels, but renders
-  // no authoring preview of its own — a host that wants to see the leader it is drawing draws it.
-  const previewSvg = document.createElementNS(SVG_NS, 'svg');
-  previewSvg.setAttribute('class', 'vl-authoring-preview');
-  const previewLine = document.createElementNS(SVG_NS, 'polyline');
-  previewLine.setAttribute('fill', 'none');
-  previewLine.setAttribute('stroke', '#4b6ef5');
-  previewLine.setAttribute('stroke-width', '1.5');
-  previewLine.setAttribute('stroke-dasharray', '5 4');
-  previewSvg.append(previewLine);
-  viewport.append(previewSvg);
-
-  const drawPreview = (): void => {
-    const { preview } = leader.authoring.getSnapshot();
-    const points = [...(preview?.vertices ?? []), ...(preview?.livePoint ? [preview.livePoint] : [])];
-    previewLine.setAttribute('points', points.map(({ x, y }) => `${x},${y}`).join(' '));
-  };
-  leader.authoring.subscribe(drawPreview);
+  // The live multi-point route: core publishes the preview points, the host draws them.
+  mountAuthoringPreview(leader, viewport);
 
   // --- Legs ---------------------------------------------------------------------------------------
-  // A new leg lands on the anchor the last one used; the user then drags its arrowhead grip onto
-  // whatever it should point at, which core already does for free with `gestures: true` + `pick`.
-  const legs = (id: string): readonly string[] =>
-    leader.annotations.get(id)?.anchors.map((leg) => leg.id) ?? [];
-
   const addLeg = controls.button('Add leg', () => {
     const id = selectedId();
-    if (id === undefined) return;
-    const last = leader.annotations.get(id)?.anchors.at(-1);
-    if (last === undefined) return;
-    // Same rewind trap as the note ids, one scope down: remove `leg-1` and the next add would
-    // re-mint `leg-2`, which `document.ts` rejects as a duplicate leg id. Count past whatever is
-    // already there instead of counting how many there are.
-    const taken = new Set(legs(id));
-    let ordinal = taken.size + 1;
-    while (taken.has(`leg-${ordinal}`)) ordinal += 1;
-    leader.authoring.markup.addAnchor(id, {
-      id: `leg-${ordinal}`,
-      anchor: last.anchor,
-      routing: { kind: 'automatic', mode: 'dogleg' },
-    });
+    const count = id === undefined ? undefined : appendLeg(leader, id);
+    if (count === undefined) return;
     syncControls();
-    say(`${id} now has ${legs(id).length} legs — drag the new arrowhead onto something`);
+    say(`${id} now has ${count} legs — drag the new arrowhead onto something`);
   });
 
   // No "a leader needs at least one leg" message: the button is disabled while the selection has one.
@@ -414,86 +314,15 @@ try {
       say('Nothing saved yet');
       return;
     }
-    closeEditor();
+    textEditor.close();
     // `parse` first so a corrupt payload throws before the live document is touched.
     leader.documents.replace(leader.documents.parse(saved));
     syncControls();
     say('Loaded. The instance was never reconstructed.');
   });
 
-  // --- Inline text field --------------------------------------------------------------------------
-  // The minimum that works. `/host-chrome/` has the thorough version: IME, blur-reentrancy, per-style
-  // padding and alignment copied off the definition. This one only needs a box, a font and Enter.
-  type TextContent = PlainNoteContent | TagContent | CalloutContent;
-  const asTextContent = (content: AnnotationContent): TextContent | undefined =>
-    content.kind === 'plain-note' || content.kind === 'tag' || content.kind === 'callout'
-      ? content
-      : undefined;
-
-  let editor: { readonly id: string; readonly field: HTMLTextAreaElement } | undefined;
-  const closeEditor = (): void => {
-    const open = editor;
-    editor = undefined;
-    open?.field.remove();
-  }
-
-  /** Re-run every frame: the label moves with the camera, so the field moves with the label. */
-  const placeEditor = (): void => {
-    if (editor === undefined) return;
-    const geometry = leader.geometry.of(editor.id);
-    if (geometry === undefined) {
-      editor.field.style.visibility = 'hidden';
-      return;
-    }
-    const { field } = editor;
-    field.style.visibility = 'visible';
-    field.style.left = `${geometry.label.x}px`;
-    field.style.top = `${geometry.label.y}px`;
-    field.style.width = `${geometry.label.width}px`;
-    field.style.height = `${geometry.label.height}px`;
-    field.style.fontFamily = geometry.text.fontFamily;
-    field.style.fontSize = `${geometry.text.fontSize}px`;
-    field.style.lineHeight = `${geometry.text.lineHeight}px`;
-  };
-
-  const commitEditor = (): void => {
-    if (editor === undefined) return;
-    const { id, field } = editor;
-    const value = field.value;
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    const text = content === undefined ? undefined : asTextContent(content);
-    if (text === undefined || text.text === value) return;
-    leader.annotations.update(id, { content: { ...text, text: value } });
-    say(`${id} text committed — one undo step`);
-  };
-
-  const openEditor = (id: string): void => {
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    if (content === undefined || asTextContent(content) === undefined) {
-      say('That content kind carries no plain text');
-      return;
-    }
-    const field = document.createElement('textarea');
-    field.className = 'host-text-field';
-    field.value = asTextContent(content)!.text;
-    field.setAttribute('aria-label', `Text of ${id}`);
-    field.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeEditor();
-      // Enter commits, Shift+Enter is a newline — which is why this is a textarea.
-      else if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        commitEditor();
-      }
-    });
-    field.addEventListener('blur', () => commitEditor());
-    viewport.append(field);
-    editor = { id, field };
-    placeEditor();
-    field.focus();
-    field.select();
-  }
+  // The inline text field: a box, a font and Enter, sitting on the rect `geometry.of` publishes.
+  const textEditor = createTextEditor(leader, viewport, say);
 
   // --- Two gestures core also wants, on the same boundary ------------------------------------------
   // The right button pans now, and `contextmenu` fires on mouse-DOWN on macOS and mouse-UP
@@ -514,46 +343,11 @@ try {
     // route happens to finish over an existing label.
     if (leader.authoring.getSnapshot().phase !== 'idle') return;
     const hit = leader.editing.hitTestScreen(localPoint(event));
-    if (hit?.kind === 'label') openEditor(hit.id);
+    if (hit?.kind === 'label') textEditor.open(hit.id);
   });
 
-  // --- Keyboard -----------------------------------------------------------------------------------
-  // Core binds Escape while it holds a gesture, and nothing else. Undo, redo and Delete are the
-  // host's to name; this page uses the bindings every drawing tool uses.
-  window.addEventListener('keydown', (event) => {
-    if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
-    const modifier = event.metaKey || event.ctrlKey;
-
-    if (modifier && event.key.toLowerCase() === 'z') {
-      event.preventDefault();
-      const moved = event.shiftKey ? leader.history.redo() : leader.history.undo();
-      syncControls();
-      say(moved
-        ? `${event.shiftKey ? 'Redone' : 'Undone'}`
-        : `Nothing to ${event.shiftKey ? 'redo' : 'undo'}`);
-      return;
-    }
-    if (modifier && event.key.toLowerCase() === 'a') {
-      event.preventDefault();
-      // Selection is runtime state, so select-all costs no history entry.
-      leader.annotations.select(leader.annotations.getSnapshot().annotations.map(({ id }) => id));
-      say('Selected all');
-      return;
-    }
-    if (event.key === 'Escape') {
-      closeEditor();
-      leader.annotations.clearSelection();
-      return;
-    }
-    const selected = leader.annotations.getSnapshot().selectedIds;
-    if (selected.length > 0 && (event.key === 'Delete' || event.key === 'Backspace')) {
-      event.preventDefault();
-      leader.history.transaction('Delete annotations', () => {
-        for (const id of selected) leader.annotations.remove(id);
-      });
-      say(`Deleted ${selected.length} — one undo step`);
-    }
-  });
+  // Undo, redo, select-all, Escape and Delete — the bindings every drawing tool uses.
+  bindEditingKeys(leader, { say, onEscape: textEditor.close, afterHistory: syncControls });
 
   // Counts are read back out of the public snapshots on every document event, so the status line
   // cannot drift — and `render` preserves whatever the last action said rather than overwriting it.
@@ -567,7 +361,7 @@ try {
 
   harness.onFrame(() => {
     leader.update();
-    placeEditor();
+    textEditor.place();
   });
   leader.update();
 

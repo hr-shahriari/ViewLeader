@@ -1,8 +1,8 @@
 /**
  * Scene A as ViewLeader drafts — the one mapping, used by the workbench page and by the tests.
  *
- * Split from `crowdedScene.ts` because that file must stay free of `viewleader` so a
- * node-environment test can import it without dragging a runtime in. This one is allowed the
+ * Split from `crowdedScene.ts` because that file must stay free of the `viewleader` runtime so a
+ * node-environment test can import it without dragging one in. This one is allowed the
  * dependency, and having it in one place is what stops the demo's "crowded scene" and the test
  * suite's from quietly drifting into two different drawings — which is exactly what happened when
  * the button built twenty-four plain notes and vitest graded thirty.
