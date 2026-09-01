@@ -242,7 +242,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
 
     this.cancelTour('view-removed');
     this.cancelActivation('view-removed');
-    if (references.active) await this.#deactivateActive(viewId);
+    if (references.active) await this.#deactivateActive();
     this.#assertCoordinated();
 
     return this.#commit(`Remove view ${viewId}`, (draft) => {
@@ -616,7 +616,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     throw failure;
   }
 
-  async #deactivateActive(removedViewId: string): Promise<void> {
+  async #deactivateActive(): Promise<void> {
     do {
       const active = this.#activeRollback;
       if (active === undefined) {
@@ -725,7 +725,6 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
       this.#activeViewId !== undefined
       && this.#findView(this.#activeViewId) === undefined
     ) {
-      const removedActiveViewId = this.#activeViewId;
       this.#playbackOperation?.controller.abort('active-view-removed');
       this.#activationOperation?.controller.abort('active-view-removed');
       this.#playback = idlePlayback;
@@ -733,7 +732,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
       // Never report being on a view the document no longer contains. Putting the model back
       // takes a moment, and the nearest view that does still exist is published once it finishes.
       this.#activeViewId = undefined;
-      this.#activeReconciliation ??= this.#reconcileRemovedActiveViews(removedActiveViewId)
+      this.#activeReconciliation ??= this.#reconcileRemovedActiveViews()
         .catch(() => {
           // A failure while putting things back is reported as a fatal diagnostic rather than
           // thrown. This runs in response to someone else's undo, and throwing here would surface
@@ -748,8 +747,8 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     this.#publish(false);
   }
 
-  async #reconcileRemovedActiveViews(removedViewId: string): Promise<void> {
-    if (!this.#disposed) await this.#deactivateActive(removedViewId);
+  async #reconcileRemovedActiveViews(): Promise<void> {
+    if (!this.#disposed) await this.#deactivateActive();
   }
 
   #compactActiveRollback(): void {

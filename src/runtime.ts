@@ -10,7 +10,6 @@
 import {
   DEFAULT_FONT_SIZE,
   layoutBuiltInContent,
-  type BuiltInContentLayout,
   type ContentBounds,
 } from './content.js';
 import {
@@ -38,10 +37,7 @@ import {
 } from './extensions.js';
 import type { Diagnostic, HostAdapterBundle, ViewportSnapshot } from './host.js';
 import { HostIntegration } from './host.js';
-import {
-  ImageResolutionManager,
-  type ImageFrameState,
-} from './images.js';
+import { ImageResolutionManager } from './images.js';
 import {
   generateRevisionCloudArcs,
   inkFromJson,
