@@ -401,7 +401,7 @@ export function resetPlacement(): AnnotationPlacement {
   return { kind: 'automatic' };
 }
 
-export function setRouteMode(mode: Exclude<LegRoute['mode'], 'manual'>): LegRoute {
+function setRouteMode(mode: Exclude<LegRoute['mode'], 'manual'>): LegRoute {
   if (mode !== 'straight' && mode !== 'dogleg' && mode !== 'orthogonal') {
     throw new InvalidInputError(`Unsupported route mode "${String(mode)}"`, { mode });
   }
@@ -450,7 +450,7 @@ export function removeRouteVertex(route: LegRoute, index: number): LegRoute {
   };
 }
 
-export function validateLegRoute(route: LegRoute): void {
+function validateLegRoute(route: LegRoute): void {
   if (route === null || typeof route !== 'object') throw new InvalidInputError('Route must be an object');
   if (route.mode === 'straight' || route.mode === 'dogleg' || route.mode === 'orthogonal') return;
   if (route.mode !== 'manual' || !Array.isArray(route.vertices) || route.vertices.length > 64) {
@@ -553,13 +553,6 @@ function validateExistingIndex(index: number, length: number): void {
   }
 }
 
-function validateSize(size: Readonly<{ width: number; height: number }>): void {
-  if (!Number.isFinite(size.width) || !Number.isFinite(size.height)
-    || size.width <= 0 || size.height <= 0) {
-    throw new InvalidInputError('Label size must be finite and positive');
-  }
-}
-
 function validateBounds(bounds: ScreenBounds, label: string): void {
   if (!finiteBounds(bounds) || bounds.width <= 0 || bounds.height <= 0) {
     throw new InvalidInputError(`${label} must be finite and positive`);
@@ -579,45 +572,10 @@ function finitePoint(point: Vec2): boolean {
     && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
-function finiteNonNegative(value: number, label: string): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new InvalidInputError(`${label} must be finite and non-negative`);
-  }
-  return value;
-}
-
 function average(points: readonly Vec2[]): Vec2 {
   return {
     x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
     y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
-  };
-}
-
-function contains(bounds: ScreenBounds, point: Vec2): boolean {
-  return point.x >= bounds.x && point.x <= bounds.x + bounds.width
-    && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
-}
-
-function intersectsViewport(bounds: ScreenBounds, viewport: ScreenBounds): boolean {
-  return bounds.x + bounds.width >= viewport.x
-    && bounds.x <= viewport.x + viewport.width
-    && bounds.y + bounds.height >= viewport.y
-    && bounds.y <= viewport.y + viewport.height;
-}
-
-function overlaps(left: ScreenBounds, right: ScreenBounds): boolean {
-  return left.x < right.x + right.width
-    && right.x < left.x + left.width
-    && left.y < right.y + right.height
-    && right.y < left.y + left.height;
-}
-
-function inflate(bounds: ScreenBounds, amount: number): ScreenBounds {
-  return {
-    x: bounds.x - amount,
-    y: bounds.y - amount,
-    width: bounds.width + amount * 2,
-    height: bounds.height + amount * 2,
   };
 }
 

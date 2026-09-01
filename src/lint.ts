@@ -18,17 +18,19 @@ export interface Segment {
 
 const EPSILON = 1e-9;
 
-export type IntersectionKind = 'none' | 'interior' | 'endpoint' | 't-junction' | 'collinear-overlap';
-export interface Intersection { readonly kind: IntersectionKind; readonly point?: Vec2 }
+/**
+ * How two lines meet. `touch` is deliberately generous — merely meeting end to end counts, because
+ * on a drawing two leader lines touching reads as badly as two crossing.
+ */
+interface Intersection { readonly kind: 'none' | 'touch' | 'collinear-overlap'; readonly point?: Vec2 }
 
 function finitePoint(point: Vec2): boolean { return Number.isFinite(point.x) && Number.isFinite(point.y); }
 function distance(a: Vec2, b: Vec2): number { return Math.hypot(b.x - a.x, b.y - a.y); }
 function cross(a: Vec2, b: Vec2): number { return a.x * b.y - a.y * b.x; }
 function subtract(a: Vec2, b: Vec2): Vec2 { return { x: a.x - b.x, y: a.y - b.y }; }
 function inUnit(value: number): boolean { return value >= -EPSILON && value <= 1 + EPSILON; }
-function strictlyInUnit(value: number): boolean { return value > EPSILON && value < 1 - EPSILON; }
 
-export function classifyIntersection(a: Segment, b: Segment): Intersection {
+function classifyIntersection(a: Segment, b: Segment): Intersection {
   if (![a.start, a.end, b.start, b.end].every(finitePoint)) return { kind: 'none' };
   const r = subtract(a.end, a.start);
   const s = subtract(b.end, b.start);
@@ -43,28 +45,17 @@ export function classifyIntersection(a: Segment, b: Segment): Intersection {
     if (high < low - EPSILON) return { kind: 'none' };
     if (Math.abs(high - low) <= EPSILON) {
       const ratio = Math.abs(a1 - a0) <= EPSILON ? 0 : (low - a0) / (a1 - a0);
-      return { kind: 'endpoint', point: { x: a.start.x + r.x * ratio, y: a.start.y + r.y * ratio } };
+      return { kind: 'touch', point: { x: a.start.x + r.x * ratio, y: a.start.y + r.y * ratio } };
     }
     return { kind: 'collinear-overlap' };
   }
   const t = cross(qMinusP, s) / denominator;
   const u = cross(qMinusP, r) / denominator;
   if (!inUnit(t) || !inUnit(u)) return { kind: 'none' };
-  const point = { x: a.start.x + t * r.x, y: a.start.y + t * r.y };
-  if (strictlyInUnit(t) && strictlyInUnit(u)) return { kind: 'interior', point };
-  if (strictlyInUnit(t) !== strictlyInUnit(u)) return { kind: 't-junction', point };
-  return { kind: 'endpoint', point };
+  return { kind: 'touch', point: { x: a.start.x + t * r.x, y: a.start.y + t * r.y } };
 }
 
-/**
- * Whether two lines touch at all, including merely meeting end to end. Deliberately generous: on a
- * drawing, two leader lines touching reads as badly as two crossing.
- */
-export function inclusiveIntersection(a: Segment, b: Segment): boolean {
-  return classifyIntersection(a, b).kind !== 'none';
-}
-
-export function polylineSegments(points: readonly Vec2[]): readonly Segment[] {
+function polylineSegments(points: readonly Vec2[]): readonly Segment[] {
   const result: Segment[] = [];
   for (let index = 1; index < points.length; index += 1) {
     const start = points[index - 1]; const end = points[index];
@@ -96,7 +87,7 @@ export type LintRuleId='leader-crossing'|'non-preferred-angle'|'minimum-text-hei
  */
 export interface LintPolyline{readonly annotationId:string;readonly legId?:string;readonly points:readonly Vec2[];readonly label:Rect;readonly fontSize:number;readonly capHeightRatio:number;readonly annotationScale:number;readonly continuation?:boolean}
 export interface LintFinding{readonly ruleId:LintRuleId;readonly severity:'warning'|'error';readonly annotationIds:readonly string[];readonly legIds:readonly string[];readonly message:string;readonly point:Vec2}
-export interface LintOptions{readonly pixelsPerMillimetre:number;readonly minimumTextHeightMm:number;readonly angleToleranceDegrees:number;readonly skip?:ReadonlySet<LintRuleId>;readonly minimumSegmentLength?:number}
+export interface LintOptions{readonly pixelsPerMillimetre:number;readonly minimumTextHeightMm:number;readonly angleToleranceDegrees:number;readonly skip?:ReadonlySet<LintRuleId>}
 
 /**
  * How close two leader lines have to be before they count as deliberately joined rather than
@@ -112,7 +103,8 @@ export interface LintOptions{readonly pixelsPerMillimetre:number;readonly minimu
 export const MERGE_EPS = 0.5;
 
 function sharedEndpoint(a:Segment,b:Segment):boolean{return [a.start,a.end].some(left=>[b.start,b.end].some(right=>distance(left,right)<=MERGE_EPS));}
-function firstSloped(points:readonly Vec2[],minimum:number):Segment|undefined{return polylineSegments(points).find(segment=>{const dx=Math.abs(segment.end.x-segment.start.x);const dy=Math.abs(segment.end.y-segment.start.y);return distance(segment.start,segment.end)>=minimum&&dx>1e-8&&dy>1e-8;});}
+/** The first genuinely sloped run. Anything under 2 px is a rounding artefact, not a drawn angle. */
+function firstSloped(points:readonly Vec2[]):Segment|undefined{return polylineSegments(points).find(segment=>{const dx=Math.abs(segment.end.x-segment.start.x);const dy=Math.abs(segment.end.y-segment.start.y);return distance(segment.start,segment.end)>=2&&dx>1e-8&&dy>1e-8;});}
 function pointInside(rect:Rect,point:Vec2):boolean{return point.x>rect.x&&point.x<rect.x+rect.width&&point.y>rect.y&&point.y<rect.y+rect.height;}
 /**
  * Whether a line passes through the inside of a rectangle. Running along its edge does not count.
@@ -135,9 +127,9 @@ export function segmentThroughInterior(segment:Segment,rect:Rect):boolean{
 
 export function lintFrame(polylines:readonly LintPolyline[],options:LintOptions):readonly LintFinding[]{
   const findings:LintFinding[]=[];const skip=options.skip??new Set<LintRuleId>();
-  if(!skip.has('leader-crossing'))for(let leftIndex=0;leftIndex<polylines.length;leftIndex+=1)for(let rightIndex=leftIndex+1;rightIndex<polylines.length;rightIndex+=1){const left=polylines[leftIndex],right=polylines[rightIndex];if(left===undefined||right===undefined||left.annotationId===right.annotationId)continue;outer:for(const a of polylineSegments(left.points))for(const b of polylineSegments(right.points)){const classified=classifyIntersection(a,b);if(!inclusiveIntersection(a,b)||classified.kind==='collinear-overlap'||sharedEndpoint(a,b))continue;findings.push({ruleId:'leader-crossing',severity:'error',annotationIds:[left.annotationId,right.annotationId],legIds:[left.legId,right.legId].filter((id):id is string=>id!==undefined),message:'Leader crossing violates ASME Y14.2 / ISO 128-22.',point:classified.point??a.start});break outer;}}
+  if(!skip.has('leader-crossing'))for(let leftIndex=0;leftIndex<polylines.length;leftIndex+=1)for(let rightIndex=leftIndex+1;rightIndex<polylines.length;rightIndex+=1){const left=polylines[leftIndex],right=polylines[rightIndex];if(left===undefined||right===undefined||left.annotationId===right.annotationId)continue;outer:for(const a of polylineSegments(left.points))for(const b of polylineSegments(right.points)){const classified=classifyIntersection(a,b);if(classified.kind!=='touch'||sharedEndpoint(a,b))continue;findings.push({ruleId:'leader-crossing',severity:'error',annotationIds:[left.annotationId,right.annotationId],legIds:[left.legId,right.legId].filter((id):id is string=>id!==undefined),message:'Leader crossing violates ASME Y14.2 / ISO 128-22.',point:classified.point??a.start});break outer;}}
   for(const entry of polylines){
-    if(!skip.has('non-preferred-angle')&&entry.continuation!==true){const segment=firstSloped(entry.points,options.minimumSegmentLength??2);if(segment!==undefined){const raw=Math.abs(Math.atan2(segment.end.y-segment.start.y,segment.end.x-segment.start.x)*180/Math.PI)%180;const angle=raw>90?180-raw:raw;const preferred=PREFERRED_LEADER_ANGLES.some(value=>Math.abs(value-angle)<=options.angleToleranceDegrees);if(!preferred)findings.push({ruleId:'non-preferred-angle',severity:'warning',annotationIds:[entry.annotationId],legIds:entry.legId?[entry.legId]:[],message:'Leader angle is not preferred by ISO 128-22.',point:segment.start});}}
+    if(!skip.has('non-preferred-angle')&&entry.continuation!==true){const segment=firstSloped(entry.points);if(segment!==undefined){const raw=Math.abs(Math.atan2(segment.end.y-segment.start.y,segment.end.x-segment.start.x)*180/Math.PI)%180;const angle=raw>90?180-raw:raw;const preferred=PREFERRED_LEADER_ANGLES.some(value=>Math.abs(value-angle)<=options.angleToleranceDegrees);if(!preferred)findings.push({ruleId:'non-preferred-angle',severity:'warning',annotationIds:[entry.annotationId],legIds:entry.legId?[entry.legId]:[],message:'Leader angle is not preferred by ISO 128-22.',point:segment.start});}}
     if(!skip.has('minimum-text-height')&&entry.continuation!==true&&Number.isFinite(options.pixelsPerMillimetre)&&options.pixelsPerMillimetre>0){const mm=(entry.fontSize*entry.capHeightRatio*entry.annotationScale)/options.pixelsPerMillimetre;if(Number.isFinite(mm)&&mm<options.minimumTextHeightMm)findings.push({ruleId:'minimum-text-height',severity:'warning',annotationIds:[entry.annotationId],legIds:entry.legId?[entry.legId]:[],message:'Text cap height is below the ISO 3098 minimum.',point:{x:entry.label.x,y:entry.label.y}});}
     if(!skip.has('leader-through-label'))for(const foreign of polylines){if(foreign.annotationId===entry.annotationId)continue;if(polylineSegments(entry.points).some(segment=>segmentThroughInterior(segment,foreign.label))){findings.push({ruleId:'leader-through-label',severity:'error',annotationIds:[entry.annotationId,foreign.annotationId],legIds:entry.legId?[entry.legId]:[],message:'Leader passes through a foreign annotation label.',point:{x:foreign.label.x+foreign.label.width/2,y:foreign.label.y+foreign.label.height/2}});break;}}
   }

@@ -66,8 +66,7 @@ renderer.setAnimationLoop(() => {
    Pass `controls` and ViewLeader can lease your OrbitControls — it disables them for the length
    of a gesture, so an edit and an orbit can never run at once.
 
-3. **Drive it.** Call `update()` after `renderer.render()` from your own loop, as above, or pass
-   `selfDrive: true` and let ViewLeader run its own `requestAnimationFrame`. Either way a frame
+3. **Drive it.** Call `update()` after `renderer.render()` from your own loop, as above. A frame
    that changed nothing costs nothing.
 
 4. **Claim the edges your chrome owns.** `setViewportInsets({ top, right, bottom, left })` keeps

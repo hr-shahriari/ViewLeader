@@ -84,8 +84,7 @@ document-wide `candidateCount` and the placement hysteresis), and **live preview
 state** (an in-progress drag overrides both the annotation's own placement and any view override,
 and only becomes stored on release).
 
-Drive it either way: `selfDrive: true` (or `start()`) runs a rAF loop; otherwise the host calls
-`update()` from its own render loop.
+The host drives it: call `update()` from its own render loop. There is no self-driven rAF loop.
 
 ### Other subsystems worth knowing
 

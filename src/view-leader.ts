@@ -110,7 +110,6 @@ export interface ViewLeaderOptions {
   readonly historyCapacity?: number;
   readonly documentLimits?: Partial<DocumentLimits>;
   readonly plugins?: readonly PluginDescriptor[];
-  readonly selfDrive?: boolean;
   readonly editing?: EditingOptions;
   /**
    * An element that wheel events over the overlay are re-dispatched to — the viewer's canvas, so
@@ -482,7 +481,6 @@ export class ViewLeader {
       linkFrameSeam(this, this.#runtime);
 
       this.#publishDiagnostics(initialDiagnostics);
-      if (options.selfDrive === true) this.start();
     } catch (error) {
       this.#disposed = true;
       const cleanupErrors = runCleanupSteps([
@@ -504,16 +502,6 @@ export class ViewLeader {
   public update(): void {
     this.#assertActive();
     this.#runtime.update();
-  }
-
-  public start(): void {
-    this.#assertActive();
-    this.#runtime.start();
-  }
-
-  public stop(): void {
-    this.#assertActive();
-    this.#runtime.stop();
   }
 
   /**
