@@ -20,7 +20,6 @@ import {
 } from './arrange.js';
 import {
   DocumentEngine,
-  type DocumentLimits,
   type TransactionOptions,
 } from './document.js';
 import {
@@ -102,7 +101,6 @@ export interface ViewLeaderOptions {
   readonly adapters: HostAdapterBundle;
   readonly initialDocument?: string | ViewLeaderDocument;
   readonly historyCapacity?: number;
-  readonly documentLimits?: Partial<DocumentLimits>;
   readonly plugins?: readonly PluginDescriptor[];
   readonly editing?: EditingOptions;
   /**
@@ -220,7 +218,6 @@ export interface DefinitionsPublicCapability extends SnapshotCapability<Definiti
   update<Definition extends TypedDefinition>(id: string, replacement: Definition): Definition;
   remove(id: string): TypedDefinition;
   applyTemplate<Target extends TemplateApplicable>(target: Target, templateId: string): Target;
-  applyTemplateToAnnotation(annotationId: string, templateId: string): Annotation;
 }
 
 export interface DiagnosticsCapability {
@@ -315,7 +312,6 @@ export class ViewLeader {
     this.#boundary = options.boundary;
     this.#document = new DocumentEngine({
       ...(options.historyCapacity === undefined ? {} : { historyCapacity: options.historyCapacity }),
-      ...(options.documentLimits === undefined ? {} : { limits: options.documentLimits }),
     });
     const loadDiagnostics: Diagnostic[] = [];
     const initialDocument = options.initialDocument === undefined
@@ -886,20 +882,6 @@ export class ViewLeader {
       remove: (id: string) => { this.#assertActive(); return capability.remove(id); },
       applyTemplate: <Target extends TemplateApplicable>(target: Target, templateId: string) => {
         this.#assertActive(); return capability.applyTemplate(target, templateId);
-      },
-      applyTemplateToAnnotation: (annotationId: string, templateId: string) => {
-        this.#assertActive();
-        this.#requireAnnotation(annotationId);
-        const defaults = capability.applyTemplate<TemplateApplicable>({}, templateId);
-        const content = defaults.content === undefined
-          ? undefined
-          : this.#preparePluginContent(defaults.content);
-        return this.#document.update(annotationId, {
-          ...(content === undefined ? {} : { content }),
-          ...(defaults.styleId === undefined ? {} : { styleId: defaults.styleId }),
-          ...(defaults.placement === undefined ? {} : { placement: defaults.placement }),
-          ...(defaults.routing === undefined ? {} : { routing: defaults.routing }),
-        }, 'Apply annotation template');
       },
     });
   }

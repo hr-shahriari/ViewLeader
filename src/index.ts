@@ -123,7 +123,6 @@ export type {
   InteractionLease,
   ModelBounds,
   ModelBoundsAdapter,
-  NeutralViewerStateAdapter,
   NormalizedPointerInput,
   OcclusionAdapter,
   OcclusionResult,

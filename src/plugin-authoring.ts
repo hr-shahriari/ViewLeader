@@ -268,10 +268,8 @@ export class PluginAuthoringController {
       phase: active === undefined ? 'idle' : 'active',
       pluginId: active?.pluginId ?? null,
       toolId: active?.toolId ?? null,
-      state: active === undefined ? null : immutableClone(active.state),
-      preview: active === undefined
-        ? Object.freeze([])
-        : immutableClone(active.preview),
+      state: active === undefined ? null : structuredClone(active.state),
+      preview: active === undefined ? Object.freeze([]) : structuredClone(active.preview),
       status: this.#status,
     });
   }
@@ -279,15 +277,4 @@ export class PluginAuthoringController {
   #assertActive(): void {
     if (this.#disposed) throw new DisposedError();
   }
-}
-
-function immutableClone<Value>(value: Value): Value {
-  const clone = structuredClone(value);
-  const freeze = (candidate: unknown): void => {
-    if (candidate === null || typeof candidate !== 'object' || Object.isFrozen(candidate)) return;
-    Object.freeze(candidate);
-    for (const child of Object.values(candidate)) freeze(child);
-  };
-  freeze(clone);
-  return clone;
 }

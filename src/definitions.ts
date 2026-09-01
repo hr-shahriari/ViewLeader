@@ -28,6 +28,7 @@ import type {
   Vec2,
 } from './types.js';
 import { revisionCache } from './internal/snapshot-cache.js';
+import { assertJson, type JsonBounds } from './internal/json.js';
 
 export type DefinitionKind = 'style' | 'template' | 'terminator' | 'enclosure';
 
@@ -238,8 +239,8 @@ export interface DefinitionMutation<Value> {
 export interface DefinitionDocumentPort {
   readDefinitions(): readonly TypedDefinition[];
   referenceCounts(id: string): DefinitionReferenceCounts;
-  snapshotStamp?(): SnapshotStamp;
-  subscribe?(listener: () => void): Unsubscribe;
+  snapshotStamp(): SnapshotStamp;
+  subscribe(listener: () => void): Unsubscribe;
   transact<Value>(
     label: string,
     operation: (current: readonly TypedDefinition[]) => DefinitionMutation<Value>,
@@ -249,6 +250,14 @@ export interface DefinitionDocumentPort {
 export interface DefinitionsSnapshot extends SnapshotStamp {
   readonly definitions: readonly TypedDefinition[];
 }
+
+/** Template defaults are a handful of fields. The caps stop a runaway object, not a real template. */
+const TEMPLATE_JSON_BOUNDS: JsonBounds = Object.freeze({
+  maxDepth: 16,
+  maxNodes: 2_048,
+  maxArrayLength: 512,
+  maxKeyLength: 128,
+});
 
 /** Standard arrowhead proportions: three times as long as it is wide. */
 const ARROW_HALF_WIDTH = 1 / 6;
@@ -682,18 +691,15 @@ export class DefinitionsCapability {
   }
 
   public getSnapshot(): DefinitionsSnapshot {
-    const stamp = this.#port.snapshotStamp?.();
-    const build = (): DefinitionsSnapshot => Object.freeze({
-      ...(stamp ?? { runtimeRevision: 0, documentRevision: 0 }),
+    const stamp = this.#port.snapshotStamp();
+    return this.#snapshotCache(stamp.runtimeRevision, () => Object.freeze({
+      ...stamp,
       definitions: Object.freeze([...this.list()]),
-    });
-    // No stamp means no change signal either — `subscribe` falls back to a no-op — so there is
-    // nothing to key a cache on and a fresh read is the honest answer.
-    return stamp === undefined ? build() : this.#snapshotCache(stamp.runtimeRevision, build);
+    }));
   }
 
   public subscribe(listener: () => void): Unsubscribe {
-    return this.#port.subscribe?.(listener) ?? (() => undefined);
+    return this.#port.subscribe(listener);
   }
 
   public list(kind?: DefinitionKind): readonly TypedDefinition[] {
@@ -818,7 +824,8 @@ export function validateDefinition(
     case 'template':
       assertExactKeys(definition, ['kind', 'id', 'name', 'defaults'], 'template definition', unrecognized);
       assertExactKeys(definition.defaults, ['content', 'styleId', 'placement', 'routing'], 'template defaults', unrecognized);
-      assertJson(definition.defaults, 'template defaults');
+      assertJson(definition.defaults, 'template defaults', TEMPLATE_JSON_BOUNDS, (_failure, message, details) =>
+        new InvalidInputError(message, details));
       return;
     case 'terminator':
       assertExactKeys(definition, [
@@ -854,7 +861,7 @@ export function validateDefinition(
   }
 }
 
-export function validateDeclarativeGeometry(
+function validateDeclarativeGeometry(
   definition: TerminatorDefinition | EnclosureDefinition,
   unrecognized?: string[],
 ): void {
@@ -1375,40 +1382,6 @@ function assertExactKeys(
     throw domainError('INVALID_DEFINITION', `${label} contains unsupported fields`, { unknown });
   }
   for (const key of unknown) unrecognized.push(`${label}.${key}`);
-}
-
-function assertJson(value: unknown, label: string): asserts value is JsonValue {
-  const seen = new Set<object>();
-  let count = 0;
-  const visit = (candidate: unknown, depth: number): void => {
-    count += 1;
-    if (count > 2_048 || depth > 16) {
-      throw new InvalidInputError(`${label} exceeds JSON bounds`);
-    }
-    if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') return;
-    if (typeof candidate === 'number') {
-      if (!Number.isFinite(candidate)) throw new InvalidInputError(`${label} contains a non-finite number`);
-      return;
-    }
-    if (typeof candidate !== 'object') throw new InvalidInputError(`${label} must be declarative JSON`);
-    if (seen.has(candidate)) throw new InvalidInputError(`${label} contains a cycle`);
-    seen.add(candidate);
-    if (Array.isArray(candidate)) {
-      if (candidate.length > 512) throw new InvalidInputError(`${label} array is too large`);
-      for (const child of candidate) visit(child, depth + 1);
-    } else {
-      const entries = Object.entries(candidate);
-      if (entries.length > 256) throw new InvalidInputError(`${label} object is too large`);
-      for (const [key, child] of entries) {
-        if (key.length > 128 || key === '__proto__' || key === 'constructor') {
-          throw new InvalidInputError(`${label} contains an unsafe key`, { key });
-        }
-        visit(child, depth + 1);
-      }
-    }
-    seen.delete(candidate);
-  };
-  visit(value, 0);
 }
 
 function countJsonString(value: JsonValue | undefined, target: string): number {

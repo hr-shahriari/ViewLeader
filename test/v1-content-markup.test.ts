@@ -19,11 +19,8 @@ import {
   routeLegs,
   setManualPlacement,
 } from '../src/routing.js';
-import {
-  ImageResolutionManager,
-  validateHostImageContent,
-  type HostImagePort,
-} from '../src/images.js';
+import { ImageResolutionManager, validateHostImageContent } from '../src/images.js';
+import type { HostImageAdapter } from '../src/host.js';
 import {
   OcclusionManager,
   type HostOcclusionPort,
@@ -57,7 +54,7 @@ import {
   resizeRegion,
   simplifyInk,
 } from '../src/markup.js';
-import type { PluginEnvelope } from '../src/types.js';
+import type { PluginEnvelope, SnapshotStamp, Unsubscribe } from '../src/types.js';
 import { DocumentEngine } from '../src/document.js';
 import { MarkupAuthoringCapability } from '../src/markup-authoring-capability.js';
 
@@ -78,6 +75,14 @@ class DefinitionPortFake implements DefinitionDocumentPort {
 
   public referenceCounts(): DefinitionReferenceCounts {
     return this.references;
+  }
+
+  public snapshotStamp(): SnapshotStamp {
+    return { runtimeRevision: this.commits, documentRevision: this.commits };
+  }
+
+  public subscribe(): Unsubscribe {
+    return () => undefined;
   }
 
   public transact<Value>(
@@ -204,7 +209,7 @@ describe('v1 host images', () => {
       complete = done;
     }));
     const invalidate = vi.fn();
-    const manager = new ImageResolutionManager({ resolve } satisfies HostImagePort, {
+    const manager = new ImageResolutionManager({ resolve } satisfies HostImageAdapter, {
       invalidate,
       diagnostic: vi.fn(),
     });
@@ -232,7 +237,7 @@ describe('v1 host images', () => {
     const diagnostic = vi.fn();
     const invalidate = vi.fn();
     const manager = new ImageResolutionManager({
-      resolve: ({ signal: requestSignal }) => {
+      resolve: (_reference, requestSignal) => {
         signal = requestSignal;
         return new Promise((_resolve, rejectPromise) => { reject = rejectPromise; });
       },

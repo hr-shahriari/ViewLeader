@@ -11,6 +11,7 @@
 // `viewleader/markdown` is the worked example, written against exactly this API.
 import { domainError } from './errors.js';
 import type { DeclarativePathCommand, DefinitionBounds } from './definitions.js';
+import { assertJson, type JsonBounds } from './internal/json.js';
 import type { JsonObject, JsonValue, PluginEnvelope, Vec2 } from './types.js';
 
 export const CORE_EXTENSION_API_VERSION = '1.0.0';
@@ -107,22 +108,22 @@ export interface PluginDescriptor {
   readonly setup?: (context: PluginSetupContext) => void;
 }
 
-export interface ExtensionLimits {
-  readonly maximumEnvelopeBytes: number;
-  readonly maximumStringLength: number;
-  readonly maximumDepth: number;
-  readonly maximumNodes: number;
-  readonly maximumPrimitives: number;
-  readonly maximumPathCommands: number;
-}
-
-export const DEFAULT_EXTENSION_LIMITS: ExtensionLimits = Object.freeze({
+/**
+ * How much a plugin may hand over at once. Generous for real content, and tight enough that a
+ * broken plugin cannot stall a frame or bloat a document.
+ */
+const EXTENSION_LIMITS = Object.freeze({
   maximumEnvelopeBytes: 256_000,
   maximumStringLength: 20_000,
-  maximumDepth: 24,
-  maximumNodes: 8_192,
   maximumPrimitives: 2_048,
   maximumPathCommands: 1_024,
+});
+
+const PLUGIN_JSON_BOUNDS: JsonBounds = Object.freeze({
+  maxDepth: 24,
+  maxNodes: 8_192,
+  maxStringLength: EXTENSION_LIMITS.maximumStringLength,
+  maxKeyLength: 256,
 });
 
 export interface PluginResolutionDiagnostic {
@@ -146,8 +147,6 @@ export interface ExtensionResolution {
 }
 
 export interface ExtensionRuntimeOptions {
-  readonly coreApiVersion?: string;
-  readonly limits?: ExtensionLimits;
   readonly invalidate?: () => void;
 }
 
@@ -159,7 +158,6 @@ export interface ExtensionRuntimeOptions {
  */
 export class ExtensionRuntime {
   readonly #descriptors = new Map<string, PluginDescriptor>();
-  readonly #limits: ExtensionLimits;
   readonly #cleanups: (() => void)[] = [];
   #disposed = false;
 
@@ -167,11 +165,8 @@ export class ExtensionRuntime {
     descriptors: readonly PluginDescriptor[],
     options: ExtensionRuntimeOptions = {},
   ) {
-    const coreApiVersion = options.coreApiVersion ?? CORE_EXTENSION_API_VERSION;
-    this.#limits = options.limits ?? DEFAULT_EXTENSION_LIMITS;
-    validateExtensionLimits(this.#limits);
     for (const descriptor of descriptors) {
-      validatePluginDescriptor(descriptor, coreApiVersion);
+      validatePluginDescriptor(descriptor);
       if (this.#descriptors.has(descriptor.id)) {
         throw domainError('INVALID_PLUGIN', `Duplicate plugin id "${descriptor.id}"`, {
           pluginId: descriptor.id,
@@ -272,7 +267,7 @@ export class ExtensionRuntime {
     const unresolved: PluginEnvelope[] = [];
     const diagnostics: PluginResolutionDiagnostic[] = [];
     for (const envelope of envelopes) {
-      validatePluginEnvelope(envelope, this.#limits);
+      validatePluginEnvelope(envelope);
       const descriptor = this.#descriptors.get(envelope.pluginId);
       if (descriptor === undefined) {
         unresolved.push(clone(envelope));
@@ -285,7 +280,7 @@ export class ExtensionRuntime {
         });
         continue;
       }
-      const migrated = migrateEnvelope(envelope, descriptor, this.#limits);
+      const migrated = migrateEnvelope(envelope, descriptor);
       if (migrated === undefined) {
         unresolved.push(clone(envelope));
         diagnostics.push({
@@ -317,14 +312,14 @@ export class ExtensionRuntime {
 
   public validateForCommit(envelope: PluginEnvelope): PluginEnvelope {
     this.#assertActive();
-    validatePluginEnvelope(envelope, this.#limits);
+    validatePluginEnvelope(envelope);
     const descriptor = this.#descriptors.get(envelope.pluginId);
     if (descriptor === undefined) {
       throw domainError('INVALID_PLUGIN', `Plugin "${envelope.pluginId}" is not installed`, {
         pluginId: envelope.pluginId,
       });
     }
-    const migrated = migrateEnvelope(envelope, descriptor, this.#limits);
+    const migrated = migrateEnvelope(envelope, descriptor);
     if (migrated === undefined) {
       throw domainError('INVALID_PLUGIN', 'Plugin envelope has no supported migration path', {
         pluginId: envelope.pluginId,
@@ -355,7 +350,7 @@ export class ExtensionRuntime {
         cause,
       });
     }
-    validatePrimitives(primitives, this.#limits);
+    validatePrimitives(primitives);
     return clone(primitives);
   }
 
@@ -374,7 +369,7 @@ export class ExtensionRuntime {
     if (tool === undefined) {
       throw domainError('INVALID_PLUGIN', `Unknown plugin tool "${toolId}"`, { pluginId, toolId });
     }
-    validateToolInput(input, this.#limits);
+    validateToolInput(input);
     const current = deepFreeze(clone(state ?? tool.initialState));
     let transition: PluginToolTransition;
     try {
@@ -387,9 +382,9 @@ export class ExtensionRuntime {
       });
     }
     assertExactKeys(transition, ['state', 'preview', 'command', 'outcome', 'status'], 'plugin tool transition');
-    validateJson(transition.state, this.#limits, 'plugin tool state');
-    if (transition.preview !== undefined) validatePrimitives(transition.preview, this.#limits);
-    if (transition.command !== undefined) validateCommand(transition.command, this.#limits);
+    validateJson(transition.state, 'plugin tool state');
+    if (transition.preview !== undefined) validatePrimitives(transition.preview);
+    if (transition.command !== undefined) validateCommand(transition.command);
     if (transition.status !== undefined && transition.status.length > 1_024) {
       throw domainError('INVALID_PLUGIN', 'Plugin tool status exceeds the string bound', { pluginId, toolId });
     }
@@ -415,10 +410,7 @@ export class ExtensionRuntime {
   }
 }
 
-export function validatePluginDescriptor(
-  descriptor: PluginDescriptor,
-  coreApiVersion = CORE_EXTENSION_API_VERSION,
-): void {
+function validatePluginDescriptor(descriptor: PluginDescriptor): void {
   if (descriptor === null || typeof descriptor !== 'object') {
     throw domainError('INVALID_PLUGIN', 'Plugin descriptor must be an object');
   }
@@ -426,12 +418,11 @@ export function validatePluginDescriptor(
     'id', 'coreApiRange', 'schemaVersion', 'validate', 'migrations', 'render', 'tools', 'setup',
   ], 'plugin descriptor');
   validateStableId(descriptor.id, 'plugin id');
-  if (typeof descriptor.coreApiRange !== 'string'
-    || !apiRangeIncludes(descriptor.coreApiRange, coreApiVersion)) {
-    throw domainError('INVALID_PLUGIN', `Plugin "${descriptor.id}" is incompatible with core ${coreApiVersion}`, {
+  if (typeof descriptor.coreApiRange !== 'string' || !apiRangeIncludes(descriptor.coreApiRange)) {
+    throw domainError('INVALID_PLUGIN', `Plugin "${descriptor.id}" is incompatible with core ${CORE_EXTENSION_API_VERSION}`, {
       pluginId: descriptor.id,
       coreApiRange: descriptor.coreApiRange,
-      coreApiVersion,
+      coreApiVersion: CORE_EXTENSION_API_VERSION,
     });
   }
   if (!Number.isInteger(descriptor.schemaVersion) || descriptor.schemaVersion < 1) {
@@ -471,14 +462,11 @@ export function validatePluginDescriptor(
       });
     }
     toolIds.add(tool.id);
-    validateJson(tool.initialState, DEFAULT_EXTENSION_LIMITS, 'plugin tool initial state');
+    validateJson(tool.initialState, 'plugin tool initial state');
   }
 }
 
-export function validatePluginEnvelope(
-  envelope: PluginEnvelope,
-  limits: ExtensionLimits = DEFAULT_EXTENSION_LIMITS,
-): void {
+function validatePluginEnvelope(envelope: PluginEnvelope): void {
   if (envelope === null || typeof envelope !== 'object') {
     throw domainError('INVALID_PLUGIN', 'Plugin envelope must be an object');
   }
@@ -490,20 +478,17 @@ export function validatePluginEnvelope(
       pluginId: envelope.pluginId,
     });
   }
-  validateJson(envelope.data, limits, 'plugin envelope data');
-  if (canonicalJson(envelope).length > limits.maximumEnvelopeBytes) {
+  validateJson(envelope.data, 'plugin envelope data');
+  if (JSON.stringify(envelope).length > EXTENSION_LIMITS.maximumEnvelopeBytes) {
     throw domainError('INVALID_PLUGIN', 'Plugin envelope exceeds the byte bound', {
       pluginId: envelope.pluginId,
-      maximumBytes: limits.maximumEnvelopeBytes,
+      maximumBytes: EXTENSION_LIMITS.maximumEnvelopeBytes,
     });
   }
 }
 
-export function validatePrimitives(
-  primitives: readonly DeclarativePrimitive[],
-  limits: ExtensionLimits = DEFAULT_EXTENSION_LIMITS,
-): void {
-  if (!Array.isArray(primitives) || primitives.length > limits.maximumPrimitives) {
+function validatePrimitives(primitives: readonly DeclarativePrimitive[]): void {
+  if (!Array.isArray(primitives) || primitives.length > EXTENSION_LIMITS.maximumPrimitives) {
     throw domainError('INVALID_PLUGIN', 'Plugin primitive list exceeds its bound');
   }
   for (const primitive of primitives) {
@@ -514,7 +499,7 @@ export function validatePrimitives(
           'kind', 'bounds', 'zIndex', 'accessibility', 'text', 'position', 'fontSize',
           'bold', 'italic', 'code',
         ], 'text primitive');
-        if (typeof primitive.text !== 'string' || primitive.text.length > limits.maximumStringLength
+        if (typeof primitive.text !== 'string' || primitive.text.length > EXTENSION_LIMITS.maximumStringLength
           || !finitePoint(primitive.position) || !Number.isFinite(primitive.fontSize)
           || primitive.fontSize <= 0 || primitive.fontSize > 1_000) {
           throw domainError('INVALID_PLUGIN', 'Text primitive is invalid');
@@ -526,7 +511,7 @@ export function validatePrimitives(
         ], 'path primitive');
         if (!Array.isArray(primitive.commands)
           || primitive.commands.length === 0
-          || primitive.commands.length > limits.maximumPathCommands) {
+          || primitive.commands.length > EXTENSION_LIMITS.maximumPathCommands) {
           throw domainError('INVALID_PLUGIN', 'Path primitive commands exceed their bound');
         }
         for (const command of primitive.commands) validatePathCommand(command);
@@ -540,7 +525,7 @@ export function validatePrimitives(
         ], 'image primitive');
         if (!opaqueReference(primitive.reference)
           || typeof primitive.alt !== 'string' || primitive.alt.length === 0
-          || primitive.alt.length > limits.maximumStringLength) {
+          || primitive.alt.length > EXTENSION_LIMITS.maximumStringLength) {
           throw domainError('INVALID_PLUGIN', 'Image primitive requires an opaque reference and alt text');
         }
         break;
@@ -553,7 +538,6 @@ export function validatePrimitives(
 function migrateEnvelope(
   envelope: PluginEnvelope,
   descriptor: PluginDescriptor,
-  limits: ExtensionLimits,
 ): JsonValue | undefined {
   if (envelope.schemaVersion > descriptor.schemaVersion) return undefined;
   let version = envelope.schemaVersion;
@@ -572,7 +556,7 @@ function migrateEnvelope(
         cause,
       });
     }
-    validateJson(data, limits, 'migrated plugin data');
+    validateJson(data, 'migrated plugin data');
     version = migration.to;
   }
   return data;
@@ -595,20 +579,20 @@ function callValidator(
   }
 }
 
-function validateToolInput(input: NormalizedToolInput, limits: ExtensionLimits): void {
-  validateJson(input as unknown as JsonValue, limits, 'normalized plugin tool input');
+function validateToolInput(input: NormalizedToolInput): void {
+  validateJson(input as unknown as JsonValue, 'normalized plugin tool input');
   if (input.kind === 'pointer' && !finitePoint(input.point)) {
     throw domainError('INVALID_PLUGIN', 'Plugin pointer input must be finite');
   }
 }
 
-function validateCommand(command: PluginCommandProposal, limits: ExtensionLimits): void {
+function validateCommand(command: PluginCommandProposal): void {
   if (command.kind === 'create' || command.kind === 'update') {
     assertExactKeys(command, command.kind === 'create'
       ? ['kind', 'recordType', 'data']
       : ['kind', 'id', 'recordType', 'data'], 'plugin command');
     validateStableId(command.recordType, 'plugin command record type');
-    validateJson(command.data, limits, 'plugin command data');
+    validateJson(command.data, 'plugin command data');
     if (command.kind === 'update') validateStableId(command.id, 'plugin command id');
     return;
   }
@@ -666,48 +650,9 @@ function validatePathCommand(command: DeclarativePathCommand): void {
   }
 }
 
-function validateJson(value: unknown, limits: ExtensionLimits, label: string): asserts value is JsonValue {
-  let nodes = 0;
-  const seen = new Set<object>();
-  const visit = (candidate: unknown, depth: number): void => {
-    nodes += 1;
-    if (nodes > limits.maximumNodes || depth > limits.maximumDepth) {
-      throw domainError('INVALID_PLUGIN', `${label} exceeds nesting or node bounds`);
-    }
-    if (candidate === null || typeof candidate === 'boolean') return;
-    if (typeof candidate === 'string') {
-      if (candidate.length > limits.maximumStringLength) {
-        throw domainError('INVALID_PLUGIN', `${label} contains an oversized string`);
-      }
-      return;
-    }
-    if (typeof candidate === 'number') {
-      if (!Number.isFinite(candidate)) throw domainError('INVALID_PLUGIN', `${label} contains a non-finite number`);
-      return;
-    }
-    if (typeof candidate !== 'object' || seen.has(candidate)) {
-      throw domainError('INVALID_PLUGIN', `${label} must be acyclic declarative JSON`);
-    }
-    seen.add(candidate);
-    if (Array.isArray(candidate)) {
-      for (const child of candidate) visit(child, depth + 1);
-    } else {
-      for (const [key, child] of Object.entries(candidate)) {
-        if (key.length === 0 || key.length > 256 || key === '__proto__' || key === 'constructor') {
-          throw domainError('INVALID_PLUGIN', `${label} contains an unsafe key`, { key });
-        }
-        visit(child, depth + 1);
-      }
-    }
-    seen.delete(candidate);
-  };
-  visit(value, 0);
-}
-
-function validateExtensionLimits(limits: ExtensionLimits): void {
-  if (Object.values(limits).some((value) => !Number.isInteger(value) || value < 1)) {
-    throw domainError('INVALID_PLUGIN', 'Extension limits must be positive integers');
-  }
+function validateJson(value: unknown, label: string): asserts value is JsonValue {
+  assertJson(value, label, PLUGIN_JSON_BOUNDS, (_failure, message, details) =>
+    domainError('INVALID_PLUGIN', message, details));
 }
 
 function validateStableId(id: string, label: string): void {
@@ -725,59 +670,16 @@ function assertExactKeys(value: object, allowed: readonly string[], label: strin
   }
 }
 
-function apiRangeIncludes(range: string, version: string): boolean {
-  const parsed = parseVersion(version);
-  if (parsed === undefined) return false;
-  const trimmed = range.trim();
-  if (trimmed === '*' || trimmed === `${parsed.major}.x` || trimmed === `${parsed.major}`) return true;
-  if (trimmed.startsWith('^')) {
-    const minimum = parseVersion(trimmed.slice(1));
-    return minimum !== undefined && compareVersions(parsed, minimum) >= 0 && parsed.major === minimum.major;
-  }
-  const exact = parseVersion(trimmed);
-  if (exact !== undefined) return compareVersions(parsed, exact) === 0;
-  const clauses = trimmed.split(/\s+/u);
-  if (clauses.length === 0) return false;
-  return clauses.every((clause) => {
-    const match = /^(>=|>|<=|<)(\d+\.\d+\.\d+)$/u.exec(clause);
-    if (match === null) return false;
-    const expected = parseVersion(match[2]!);
-    if (expected === undefined) return false;
-    const comparison = compareVersions(parsed, expected);
-    return match[1] === '>=' ? comparison >= 0
-      : match[1] === '>' ? comparison > 0
-        : match[1] === '<=' ? comparison <= 0
-          : comparison < 0;
-  });
-}
-
-function parseVersion(version: string): Readonly<{ major: number; minor: number; patch: number }> | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
-  return match === null ? undefined : {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-  };
-}
-
-function compareVersions(
-  left: Readonly<{ major: number; minor: number; patch: number }>,
-  right: Readonly<{ major: number; minor: number; patch: number }>,
-): number {
-  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
-}
-
-function canonicalJson(value: unknown): string {
-  const order = (candidate: unknown): unknown => {
-    if (Array.isArray(candidate)) return candidate.map(order);
-    if (candidate !== null && typeof candidate === 'object') {
-      return Object.fromEntries(Object.entries(candidate)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, order(child)]));
-    }
-    return candidate;
-  };
-  return JSON.stringify(order(value));
+/**
+ * A plugin names the core API it was written against as a caret range — `^1.0.0` — and only the
+ * major is compared, because the core API is versioned by breaking change.
+ *
+ * ponytail: caret ranges only. A plugin that needs a minor floor can read
+ * `CORE_EXTENSION_API_VERSION` in `setup` and refuse for itself.
+ */
+function apiRangeIncludes(range: string): boolean {
+  const major = /^\^(\d+)\.\d+\.\d+$/u.exec(range.trim())?.[1];
+  return major !== undefined && major === CORE_EXTENSION_API_VERSION.split('.')[0];
 }
 
 function opaqueReference(reference: string): boolean {
