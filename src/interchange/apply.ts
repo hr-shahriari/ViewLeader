@@ -44,7 +44,6 @@ export interface BcfApplyPlan {
 }
 
 export interface BcfApplyPlanOptions {
-  readonly existingViewIds?: ReadonlySet<string>;
   readonly existingAnnotationIds?: ReadonlySet<string>;
   readonly appliedTopicIds?: ReadonlySet<string>;
   readonly validateEmbeddedDocument?: (document: unknown) => ValidationReport;
@@ -106,7 +105,7 @@ export function planBcfApply(
   const annotations: PlannedBcfAnnotation[] = [];
   const skippedIds: string[] = [];
   const errors: string[] = [];
-  const plannedViews = new Set(options.existingViewIds ?? []);
+  const plannedViews = new Set<string>();
   const plannedAnnotations = new Set(options.existingAnnotationIds ?? []);
   const plannedTopics = new Set(options.appliedTopicIds ?? []);
   for (const topic of topics) {

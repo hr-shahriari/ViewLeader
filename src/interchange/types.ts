@@ -5,14 +5,6 @@ export interface ValidationReport {
   readonly errors: readonly string[];
 }
 
-export type DocumentLoadMode = 'replace' | 'merge';
-
-export interface DocumentLoadReport {
-  readonly mode: DocumentLoadMode;
-  readonly created: number;
-  readonly skippedIds: readonly string[];
-}
-
 export interface ArchiveEntry {
   readonly name: string;
   readonly data: Uint8Array;
@@ -101,7 +93,6 @@ export interface BcfExportDocument {
 
 export interface BcfExportOptions {
   readonly author: string;
-  readonly now?: () => Date;
   readonly zUpToYUp?: boolean;
   readonly includeDocument?: boolean;
   readonly snapshot?: (viewId: string) => Uint8Array | undefined;
@@ -110,16 +101,8 @@ export interface BcfExportOptions {
 
 export interface BcfParseOptions {
   readonly zUpToYUp?: boolean;
-  readonly archiveLimits?: Partial<ArchiveLimits>;
-  readonly inflateRaw?: ArchiveInflater;
   readonly xmlParser?: XmlParserFactory;
 }
-
-export type ArchiveInflater = (
-  data: Uint8Array,
-  expectedSize: number,
-  maximumSize: number,
-) => Promise<Uint8Array> | Uint8Array;
 
 export interface XmlDocumentLike {
   readonly documentElement: XmlElementLike | null;

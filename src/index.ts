@@ -300,8 +300,6 @@ export {
   type BcfParseOptions,
   type BcfSavedView,
   type BcfTopic,
-  type DocumentLoadMode,
-  type DocumentLoadReport,
   type ParsedBcf,
   type ValidationReport,
 } from './interchange/types.js';

@@ -15,10 +15,8 @@ import type {
 } from './neutral-types.js';
 import { SavedViewError } from './neutral-types.js';
 import {
-  freezeSavedView,
   normalizeLinearTourDefinition,
   normalizeSavedViewDefinition,
-  normalizeViewerState,
 } from './neutral-validation.js';
 
 export interface SavedViewCoordinatorOptions<Prepared, AnnotationSnapshot> {
@@ -477,10 +475,10 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     let annotationApplyStarted = false;
     try {
       prepared = await this.#viewerState.prepare(view.viewerState, context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       hostApplyStarted = true;
       await this.#viewerState.apply(prepared, context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       annotationSnapshot = this.#annotationViews.capture();
       annotationApplyStarted = true;
       await this.#annotationViews.apply(
@@ -488,7 +486,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
         view.annotationOverrides,
         { signal: context.signal },
       );
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
 
       const current = this.#findView(viewId);
       if (
@@ -496,7 +494,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
         fingerprint(current) !== operation.definitionFingerprint
       ) {
         operation.controller.abort('view-changed');
-        throwIfAborted(context.signal);
+        context.signal.throwIfAborted();
       }
 
       const previousRollback = this.#activeRollback;
@@ -535,7 +533,10 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
           );
         }
       }
-      if (operation.controller.signal.aborted || isAbortError(error)) {
+      if (
+        operation.controller.signal.aborted
+        || (error instanceof Error && error.name === 'AbortError')
+      ) {
         if (releaseFailure !== undefined) {
           const cleanupFailure = new SavedViewError(
             'saved_view/activation_failed',
@@ -668,8 +669,8 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     this.#pending.add(controller);
     try {
       const state = await this.#viewerState.capture({ signal: controller.signal });
-      throwIfAborted(controller.signal);
-      return normalizeViewerState(state);
+      controller.signal.throwIfAborted();
+      return state;
     } catch (error) {
       if (controller.signal.aborted) {
         throw new SavedViewError(
@@ -906,7 +907,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
 
 const timeoutScheduler: SavedViewScheduler = {
   delay(milliseconds, signal) {
-    if (signal.aborted) return Promise.reject(abortError(signal));
+    if (signal.aborted) return Promise.reject(signal.reason);
     if (milliseconds === 0) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(done, milliseconds);
@@ -921,7 +922,7 @@ const timeoutScheduler: SavedViewScheduler = {
       }
       function aborted(): void {
         cleanup();
-        reject(abortError(signal));
+        reject(signal.reason);
       }
     });
   },
@@ -937,22 +938,20 @@ function fingerprint(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw abortError(signal);
-}
-
 function abortReason(signal: AbortSignal): string {
   return typeof signal.reason === 'string' ? signal.reason : 'cancelled';
 }
 
-function abortError(signal: AbortSignal): Error {
-  const error = new Error(abortReason(signal));
-  error.name = 'AbortError';
-  return error;
+function freezeSavedView<Value>(value: Value): Readonly<Value> {
+  return deepFreeze(structuredClone(value));
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
+function deepFreeze<Value>(value: Value): Readonly<Value> {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
 }
 
 function linkAbort(

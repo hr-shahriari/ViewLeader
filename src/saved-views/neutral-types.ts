@@ -8,17 +8,7 @@
 // so returning to a view restores what you were looking at rather than just where you stood.
 
 import type { StyleOverride } from '../definitions.js';
-
-export interface NeutralVec2 {
-  readonly x: number;
-  readonly y: number;
-}
-
-export interface NeutralVec3 {
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-}
+import type { Vec2, Vec3 } from '../types.js';
 
 export interface NeutralColor {
   readonly red: number;
@@ -28,9 +18,9 @@ export interface NeutralColor {
 }
 
 interface NeutralCameraStateBase {
-  readonly position: NeutralVec3;
-  readonly direction: NeutralVec3;
-  readonly up: NeutralVec3;
+  readonly position: Vec3;
+  readonly direction: Vec3;
+  readonly up: Vec3;
 }
 
 export interface NeutralPerspectiveCameraState
@@ -78,7 +68,7 @@ export interface NeutralColorOverride {
 
 export interface NeutralClippingPlane {
   readonly id: string;
-  readonly normal: NeutralVec3;
+  readonly normal: Vec3;
   readonly constant: number;
   readonly enabled: boolean;
 }
@@ -99,7 +89,7 @@ export interface NeutralViewerState {
 
 export interface SavedViewAnnotationPlacement {
   readonly mode: 'automatic' | 'manual';
-  readonly position?: NeutralVec2;
+  readonly position?: Vec2;
 }
 
 /**
