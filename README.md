@@ -121,7 +121,7 @@ would be a broken link everywhere it is opened — and would taint the canvas on
 
 ### Examples
 
-Sixteen of them — element anchoring, markup, saved views and tours, BCF round-trip, occlusion,
+Seventeen of them — element anchoring, markup, saved views and tours, BCF round-trip, occlusion,
 drafting styles, direct editing, React and Vue.
 
 Can be viewed here [Example page](https://hr-shahriari.github.io/ViewLeader/)
@@ -153,7 +153,7 @@ Three, React and Vue are optional peer dependencies. Install only what you impor
 
 Most of what ViewLeader exports is types. Only `ViewLeader` itself, the error classes, the
 constants (`mm`, `lineweight`, `PEN`, `CAD_PAPER`, …), the geometry and lint helpers and the
-interchange functions exist at run time — 56 names in `dist/index.js`. Everything else the entry
+interchange functions exist at run time — 50 names in `dist/index.js`. Everything else the entry
 point declares is a type, and importing one of those without `type` leaves a bundler looking for a
 run-time binding that was never emitted.
 
