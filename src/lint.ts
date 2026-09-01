@@ -24,7 +24,10 @@ const EPSILON = 1e-9;
  */
 interface Intersection { readonly kind: 'none' | 'touch' | 'collinear-overlap'; readonly point?: Vec2 }
 
-function finitePoint(point: Vec2): boolean { return Number.isFinite(point.x) && Number.isFinite(point.y); }
+export function finitePoint(point: Vec2 | undefined): point is Vec2 {
+  return point !== undefined && point !== null && typeof point === 'object'
+    && Number.isFinite(point.x) && Number.isFinite(point.y);
+}
 function distance(a: Vec2, b: Vec2): number { return Math.hypot(b.x - a.x, b.y - a.y); }
 function cross(a: Vec2, b: Vec2): number { return a.x * b.y - a.y * b.x; }
 function subtract(a: Vec2, b: Vec2): Vec2 { return { x: a.x - b.x, y: a.y - b.y }; }

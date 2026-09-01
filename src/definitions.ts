@@ -28,7 +28,10 @@ import type {
   Vec2,
 } from './types.js';
 import { revisionCache } from './internal/snapshot-cache.js';
-import { assertJson, type JsonBounds } from './internal/json.js';
+import { deepFreeze } from './internal/freeze.js';
+import { assertJson, exactKeysCheck, type JsonBounds } from './internal/json.js';
+
+const assertExactKeys = exactKeysCheck((message, details) => domainError('INVALID_DEFINITION', message, details));
 
 export type DefinitionKind = 'style' | 'template' | 'terminator' | 'enclosure';
 
@@ -675,7 +678,7 @@ export function applyTemplateDefaults<Target extends TemplateApplicable>(
   // This template came out of the document, so it is read leniently: a field written by a newer
   // version is carried through rather than rejected.
   validateDefinition(template, []);
-  return clone({ ...target, ...template.defaults }) as Target;
+  return structuredClone({ ...target, ...template.defaults }) as Target;
 }
 
 export class DefinitionsCapability {
@@ -704,19 +707,19 @@ export class DefinitionsCapability {
 
   public list(kind?: DefinitionKind): readonly TypedDefinition[] {
     const definitions = [...this.#builtIns, ...this.#port.readDefinitions()];
-    return clone(kind === undefined ? definitions : definitions.filter((entry) => entry.kind === kind));
+    return structuredClone(kind === undefined ? definitions : definitions.filter((entry) => entry.kind === kind));
   }
 
   public get(id: string): TypedDefinition | undefined {
     const value = this.#builtIns.find((candidate) => candidate.id === id)
       ?? this.#port.readDefinitions().find((candidate) => candidate.id === id);
-    return value === undefined ? undefined : clone(value);
+    return value === undefined ? undefined : structuredClone(value);
   }
 
   public create<Definition extends TypedDefinition>(definition: Definition): Definition {
     validateDefinition(definition);
     this.#assertCustomId(definition.id);
-    const owned = clone(definition);
+    const owned = structuredClone(definition);
     return this.#port.transact(`Create ${definition.kind} ${definition.id}`, (current) => {
       if (current.some(({ id }) => id === definition.id)) {
         throw new InvalidInputError(`Definition "${definition.id}" already exists`, {
@@ -725,7 +728,7 @@ export class DefinitionsCapability {
         });
       }
       validateDefinitionReferences(owned, [...current, owned]);
-      return { definitions: [...current, owned], value: clone(owned) };
+      return { definitions: [...current, owned], value: structuredClone(owned) };
     }) as Definition;
   }
 
@@ -741,7 +744,7 @@ export class DefinitionsCapability {
         replacementId: replacement.id,
       });
     }
-    const owned = clone(replacement);
+    const owned = structuredClone(replacement);
     return this.#port.transact(`Update ${replacement.kind} ${id}`, (current) => {
       const index = current.findIndex((candidate) => candidate.id === id);
       const before = current[index];
@@ -756,7 +759,7 @@ export class DefinitionsCapability {
       const next = [...current];
       next[index] = owned;
       validateDefinitionReferences(owned, next);
-      return { definitions: next, value: clone(owned) };
+      return { definitions: next, value: structuredClone(owned) };
     }) as Definition;
   }
 
@@ -774,7 +777,7 @@ export class DefinitionsCapability {
       if (removed === undefined) throw new NotFoundError('definition', id);
       return {
         definitions: current.filter((candidate) => candidate.id !== id),
-        value: clone(removed),
+        value: structuredClone(removed),
       };
     });
   }
@@ -923,14 +926,14 @@ export function definitionToJson(
   unrecognized: string[] = [],
 ): JsonObject {
   validateDefinition(definition, unrecognized);
-  return clone(definition) as unknown as JsonObject;
+  return structuredClone(definition) as unknown as JsonObject;
 }
 
 export function definitionFromJson(
   value: JsonObject,
   unrecognized: string[] = [],
 ): TypedDefinition {
-  const definition = clone(value) as unknown as TypedDefinition;
+  const definition = structuredClone(value) as unknown as TypedDefinition;
   validateDefinition(definition, unrecognized);
   return definition;
 }
@@ -1363,27 +1366,6 @@ function validateColor(value: string, label: string): void {
   }
 }
 
-/**
- * Strict when authoring, forgiving when loading — the same rule as everywhere else.
- *
- * Loading, an unrecognised field belongs to a newer version, so it is reported and carried through.
- * Authoring, it is a typo, and the author is told about it at the point they made it.
- */
-function assertExactKeys(
-  value: object,
-  allowed: readonly string[],
-  label: string,
-  unrecognized?: string[],
-): void {
-  const allowedSet = new Set(allowed);
-  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
-  if (unknown.length === 0) return;
-  if (unrecognized === undefined) {
-    throw domainError('INVALID_DEFINITION', `${label} contains unsupported fields`, { unknown });
-  }
-  for (const key of unknown) unrecognized.push(`${label}.${key}`);
-}
-
 function countJsonString(value: JsonValue | undefined, target: string): number {
   if (value === undefined || value === null) return 0;
   if (typeof value === 'string') return value === target ? 1 : 0;
@@ -1392,16 +1374,4 @@ function countJsonString(value: JsonValue | undefined, target: string): number {
   let total = 0;
   for (const child of Object.values(value)) total += countJsonString(child, target);
   return total;
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
-  return value;
 }

@@ -14,6 +14,7 @@ import type {
   ViewerStateOperationContext,
 } from './neutral-types.js';
 import { SavedViewError } from './neutral-types.js';
+import { deepFreeze } from '../internal/freeze.js';
 import {
   normalizeLinearTourDefinition,
   normalizeSavedViewDefinition,
@@ -944,14 +945,6 @@ function abortReason(signal: AbortSignal): string {
 
 function freezeSavedView<Value>(value: Value): Readonly<Value> {
   return deepFreeze(structuredClone(value));
-}
-
-function deepFreeze<Value>(value: Value): Readonly<Value> {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value)) deepFreeze(child);
-  return Object.freeze(value);
 }
 
 function linkAbort(

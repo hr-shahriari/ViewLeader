@@ -1,5 +1,5 @@
 import { DEFAULT_LANDING, type LandingRender, type LandingSide } from './definitions.js';
-import { segmentThroughInterior } from './lint.js';
+import { finitePoint, segmentThroughInterior } from './lint.js';
 import { InvalidInputError } from './errors.js';
 import type { AnnotationPlacement, Vec2 } from './types.js';
 
@@ -565,11 +565,6 @@ function finiteBounds(bounds: ScreenBounds): boolean {
 
 function validatePoint(point: Vec2, label: string): void {
   if (!finitePoint(point)) throw new InvalidInputError(`${label} must be finite`);
-}
-
-function finitePoint(point: Vec2): boolean {
-  return point !== null && typeof point === 'object'
-    && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 function average(points: readonly Vec2[]): Vec2 {

@@ -5,21 +5,19 @@
 // drawn on, in that plane's own coordinates. Orbit the camera and the cloud stays on the wall,
 // foreshortening with it, instead of floating in front of the screen.
 import { InvalidInputError, InvariantViolationError } from './errors.js';
+import { exactKeysCheck } from './internal/json.js';
+import { finitePoint } from './lint.js';
 import type {
-  Annotation as CoreAnnotation,
-  AnnotationContent,
-  AnnotationPlacement,
   AnnotationRouting,
-  ElementAnchor,
   JsonObject,
   NamespacedMetadata,
   RegionAnchor as CoreRegionAnchor,
   Vec2,
   Vec3,
-  WorldPointAnchor,
 } from './types.js';
-import type { OcclusionPolicy } from './occlusion.js';
 import type { LegRoute, ScreenBounds } from './routing.js';
+
+const assertExactKeys = exactKeysCheck((message, details) => new InvalidInputError(message, details));
 
 export interface DrawingPlane {
   readonly origin: Vec3;
@@ -66,26 +64,6 @@ export interface RegionAnchor {
   readonly geometry: ClosedRegionGeometry;
 }
 
-type MultiAnchor = WorldPointAnchor | ElementAnchor | RegionAnchor;
-
-interface AnnotationLeg {
-  readonly id: string;
-  readonly anchor: MultiAnchor;
-  readonly route: LegRoute;
-}
-
-interface MultiLeaderAnnotation {
-  readonly kind: 'annotation';
-  readonly id: string;
-  readonly anchors: readonly AnnotationLeg[];
-  readonly content: AnnotationContent;
-  readonly placement: AnnotationPlacement;
-  readonly styleId?: string;
-  readonly styleOverride?: NamespacedMetadata;
-  readonly occlusion: OcclusionPolicy;
-  readonly metadata: NamespacedMetadata;
-}
-
 export interface InkAnnotation {
   readonly kind: 'ink';
   readonly id: string;
@@ -98,7 +76,6 @@ export interface InkAnnotation {
 const GEOMETRY_LIMITS = Object.freeze({
   maximumCoordinate: 1_000_000,
   maximumVertices: 4_096,
-  maximumAnchors: 64,
   inkSimplificationTolerance: 0.002,
 });
 
@@ -175,8 +152,8 @@ export class MarkupAuthoringSession {
   public get preview(): MarkupAuthoringPreview {
     return {
       kind: this.#kind,
-      plane: this.#plane === undefined ? null : clone(this.#plane),
-      geometry: this.#geometry === undefined ? null : clone(this.#geometry),
+      plane: this.#plane === undefined ? null : structuredClone(this.#plane),
+      geometry: this.#geometry === undefined ? null : structuredClone(this.#geometry),
       inkPoints: this.#inkPoints.map(copyVec2),
     };
   }
@@ -194,8 +171,8 @@ export class MarkupAuthoringSession {
     if (this.#plane !== undefined) {
       throw new InvariantViolationError('The markup drawing plane is already established');
     }
-    this.#plane = clone(plane);
-    return clone(plane);
+    this.#plane = structuredClone(plane);
+    return structuredClone(plane);
   }
 
   public setRegionGeometry(geometry: ClosedRegionGeometry): RegionAnchor {
@@ -208,7 +185,7 @@ export class MarkupAuthoringSession {
     }
     const plane = this.#requirePlane();
     const anchor = createRegionAnchor(plane, geometry);
-    this.#geometry = clone(anchor.geometry);
+    this.#geometry = structuredClone(anchor.geometry);
     return anchor;
   }
 
@@ -336,13 +313,13 @@ export function screenDeltaToDrawingPlane(
   step = 1,
 ): Vec2 | undefined {
   validateDrawingPlane(plane);
-  if (!finiteVec2(from) || !finiteVec2(screenDelta) || !Number.isFinite(step) || step <= 0) {
+  if (!finitePoint(from) || !finitePoint(screenDelta) || !Number.isFinite(step) || step <= 0) {
     throw new InvalidInputError('Screen-delta projection requires finite inputs and a positive probe step');
   }
   const origin = project(localToWorld(plane, from));
   const alongX = project(localToWorld(plane, { x: from.x + step, y: from.y }));
   const alongY = project(localToWorld(plane, { x: from.x, y: from.y + step }));
-  if (!finiteVec2(origin) || !finiteVec2(alongX) || !finiteVec2(alongY)) return undefined;
+  if (!finitePoint(origin) || !finitePoint(alongX) || !finitePoint(alongY)) return undefined;
   const xAxis = { x: (alongX.x - origin.x) / step, y: (alongX.y - origin.y) / step };
   const yAxis = { x: (alongY.x - origin.x) / step, y: (alongY.y - origin.y) / step };
   const determinant = xAxis.x * yAxis.y - xAxis.y * yAxis.x;
@@ -445,8 +422,8 @@ export function createRegionAnchor(
   const anchor: RegionAnchor = {
     kind: 'region',
     ...(modelId === undefined ? {} : { modelId }),
-    plane: clone(plane),
-    geometry: clone(geometry),
+    plane: structuredClone(plane),
+    geometry: structuredClone(geometry),
   };
   validateRegionAnchor(anchor);
   return anchor;
@@ -533,7 +510,7 @@ export function createInk(
 ): InkAnnotation {
   validateDrawingPlane(input.plane);
   const points = simplifyInk(input.points);
-  const ink: InkAnnotation = { ...clone(input), kind: 'ink', points };
+  const ink: InkAnnotation = { ...structuredClone(input), kind: 'ink', points };
   validateInk(ink);
   return ink;
 }
@@ -629,26 +606,6 @@ export function editInkPoint(ink: InkAnnotation, index: number, point: Vec2): In
   return createInk({ ...ink, points });
 }
 
-function validateMultiLeader(annotation: MultiLeaderAnnotation): void {
-  const { maximumAnchors } = GEOMETRY_LIMITS;
-  validateId(annotation.id, 'annotation id');
-  if (!Array.isArray(annotation.anchors) || annotation.anchors.length < 1
-    || annotation.anchors.length > maximumAnchors) {
-    throw new InvalidInputError(`Annotation requires 1–${maximumAnchors} anchors`);
-  }
-  const ids = new Set<string>();
-  for (const leg of annotation.anchors) {
-    validateId(leg.id, 'anchor id');
-    if (ids.has(leg.id)) throw new InvalidInputError(`Duplicate anchor id "${leg.id}"`, { id: leg.id });
-    ids.add(leg.id);
-    validateMultiAnchor(leg.anchor);
-    validateRouteShape(leg.route);
-  }
-  if (annotation.occlusion !== 'keep' && annotation.occlusion !== 'fade' && annotation.occlusion !== 'hide') {
-    throw new InvalidInputError('Annotation occlusion policy is invalid');
-  }
-}
-
 /**
  * Works out where a region's outline falls on screen.
  *
@@ -675,7 +632,7 @@ export function projectRegion(
   validateRegionAnchor(anchor);
   const local = regionOutline(anchor.geometry);
   const projected = local.map((point) => project(localToWorld(anchor.plane, point)));
-  if (projected.some((point) => point === undefined || !finiteVec2(point))) return undefined;
+  if (projected.some((point) => point === undefined || !finitePoint(point))) return undefined;
   return { kind: anchor.geometry.kind, points: projected as readonly Vec2[], closed: true };
 }
 
@@ -716,7 +673,7 @@ export function projectInk(
 ): ProjectedInk | undefined {
   validateInk(ink);
   const points = ink.points.map((point) => project(localToWorld(ink.plane, point)));
-  if (points.some((point) => point === undefined || !finiteVec2(point))) return undefined;
+  if (points.some((point) => point === undefined || !finitePoint(point))) return undefined;
   return { kind: 'ink', points: points as readonly Vec2[], closed: false };
 }
 
@@ -823,28 +780,12 @@ export function legRouteFromCore(route: AnnotationRouting): LegRoute {
     : { mode: route.mode };
 }
 
-/**
- * Reads a stored annotation back into the geometry-checked form. The document loader calls it for
- * the checking alone: an annotation this rejects is quarantined rather than drawn.
- */
-export function multiLeaderFromCore(annotation: CoreAnnotation): MultiLeaderAnnotation {
-  const converted: MultiLeaderAnnotation = {
-    kind: 'annotation',
-    id: annotation.id,
-    anchors: annotation.anchors.map((leg) => ({
-      id: leg.id,
-      anchor: leg.anchor.kind === 'region' ? regionAnchorFromCore(leg.anchor) : clone(leg.anchor),
-      route: legRouteFromCore(leg.routing),
-    })),
-    content: clone(annotation.content),
-    placement: clone(annotation.placement),
-    ...(annotation.styleId === undefined ? {} : { styleId: annotation.styleId }),
-    ...(annotation.styleOverride === undefined ? {} : { styleOverride: clone(annotation.styleOverride) }),
-    occlusion: annotation.occlusion ?? 'keep',
-    metadata: clone(annotation.metadata),
-  };
-  validateMultiLeader(converted);
-  return converted;
+function validateRouteShape(route: LegRoute): void {
+  if (route.mode === 'straight' || route.mode === 'dogleg' || route.mode === 'orthogonal') return;
+  if (route.mode !== 'manual' || route.vertices.length > 64) throw new InvalidInputError('Invalid leg route');
+  for (const point of route.vertices) {
+    if (!finitePoint(point)) throw new InvalidInputError('Manual route vertex must be finite');
+  }
 }
 
 /**
@@ -855,39 +796,13 @@ export function multiLeaderFromCore(annotation: CoreAnnotation): MultiLeaderAnno
  */
 export function inkToJson(ink: InkAnnotation, unrecognized: string[] = []): JsonObject {
   validateInk(ink, unrecognized);
-  return clone(ink) as unknown as JsonObject;
+  return structuredClone(ink) as unknown as JsonObject;
 }
 
 export function inkFromJson(value: JsonObject, unrecognized: string[] = []): InkAnnotation {
-  const ink = clone(value) as unknown as InkAnnotation;
+  const ink = structuredClone(value) as unknown as InkAnnotation;
   validateInk(ink, unrecognized);
   return ink;
-}
-
-function validateMultiAnchor(anchor: MultiAnchor): void {
-  if (anchor.kind === 'region') {
-    validateRegionAnchor(anchor);
-    return;
-  }
-  if (anchor.kind === 'world-point') {
-    validateVec3(anchor.point, 'world point');
-    return;
-  }
-  if (anchor.kind === 'element') {
-    validateId(anchor.modelId, 'model id');
-    validateId(anchor.elementId, 'element id');
-    validateVec3(anchor.fallbackPoint, 'element fallback point');
-    return;
-  }
-  throw new InvalidInputError('Unsupported annotation anchor kind');
-}
-
-function validateRouteShape(route: LegRoute): void {
-  if (route.mode === 'straight' || route.mode === 'dogleg' || route.mode === 'orthogonal') return;
-  if (route.mode !== 'manual' || route.vertices.length > 64) throw new InvalidInputError('Invalid leg route');
-  for (const point of route.vertices) {
-    if (!finiteVec2(point)) throw new InvalidInputError('Manual route vertex must be finite');
-  }
 }
 
 function editableVertices(anchor: RegionAnchor): readonly Vec2[] {
@@ -1038,7 +953,7 @@ function validateExtent(value: number, label: string): void {
 
 function validateLocalPoint(point: Vec2, label: string): void {
   const maximum = GEOMETRY_LIMITS.maximumCoordinate;
-  if (!finiteVec2(point) || Math.abs(point.x) > maximum || Math.abs(point.y) > maximum) {
+  if (!finitePoint(point) || Math.abs(point.x) > maximum || Math.abs(point.y) > maximum) {
     throw new InvalidInputError(`${label} must be finite and bounded`);
   }
 }
@@ -1056,27 +971,6 @@ function validateId(id: string, label: string): void {
   }
 }
 
-/**
- * Strict when authoring, forgiving when loading — the same rule used throughout.
- *
- * Loading, an unrecognised field belongs to a newer version and is carried through. Authoring, it
- * is a typo, and the author hears about it where they made it.
- */
-function assertExactKeys(
-  value: object,
-  allowed: readonly string[],
-  label: string,
-  unrecognized?: string[],
-): void {
-  const allowedSet = new Set(allowed);
-  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
-  if (unknown.length === 0) return;
-  if (unrecognized === undefined) {
-    throw new InvalidInputError(`${label} contains unsupported fields`, { unknown });
-  }
-  for (const key of unknown) unrecognized.push(`${label}.${key}`);
-}
-
 export function validateInsertIndex(index: number, length: number): void {
   if (!Number.isInteger(index) || index < 0 || index > length) {
     throw new InvalidInputError('Insertion index is out of range', { index, length });
@@ -1087,11 +981,6 @@ export function validateIndex(index: number, length: number): void {
   if (!Number.isInteger(index) || index < 0 || index >= length) {
     throw new InvalidInputError('Index is out of range', { index, length });
   }
-}
-
-function finiteVec2(point: Vec2 | undefined): point is Vec2 {
-  return point !== undefined && point !== null && typeof point === 'object'
-    && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 function samePoint(left: Vec2, right: Vec2): boolean {
@@ -1137,8 +1026,4 @@ function copyVec2(point: Vec2): Vec2 {
 
 function copyVec3(point: Vec3): Vec3 {
   return { x: point.x, y: point.y, z: point.z };
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
 }

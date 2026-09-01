@@ -35,9 +35,10 @@ import type {
   TagReference,
   ViewLeaderDocument,
 } from './types.js';
-import { inkFromJson, multiLeaderFromCore, regionAnchorFromCore } from './markup.js';
+import { inkFromJson, regionAnchorFromCore } from './markup.js';
 import { validateHostImageContent } from './images.js';
-import { assertJson, type JsonBounds, type JsonFailure } from './internal/json.js';
+import { deepFreeze } from './internal/freeze.js';
+import { assertJson, isJsonObject, type JsonBounds, type JsonFailure } from './internal/json.js';
 
 /**
  * How big a document may get. Generous for a real drawing — five thousand annotations is a dense
@@ -513,9 +514,7 @@ function normalizeDocument(value: unknown, diagnose?: DocumentDiagnose): ViewLea
   const quarantined = [...normalizeJsonObjectArray(input.quarantined ?? [], 'quarantined annotations')];
   for (const candidate of annotations) {
     try {
-      const annotation = normalizeAnnotation(candidate);
-      multiLeaderFromCore(annotation);
-      normalizedAnnotations.push(annotation);
+      normalizedAnnotations.push(normalizeAnnotation(candidate));
     } catch (error) {
       if (diagnose === undefined) throw error;
       quarantineOrSkip(candidate, error, quarantined, diagnose);
@@ -753,7 +752,7 @@ function normalizeAnnotation(value: unknown): Annotation {
 function normalizeLeg(value: unknown): AnnotationLeg {
   const input = objectValue(value, 'annotation leg');
   return {
-    id: stringValue(input.id, 'annotation leg id', 128),
+    id: opaqueId(input.id, 'annotation leg id', 128),
     anchor: normalizeAnchor(input.anchor),
     routing: normalizeRouting(input.routing),
   };
@@ -767,8 +766,8 @@ function normalizeAnchor(value: unknown): Anchor {
     case 'element':
       return {
         kind: 'element',
-        modelId: stringValue(input.modelId, 'modelId', 256),
-        elementId: stringValue(input.elementId, 'elementId', 256),
+        modelId: opaqueId(input.modelId, 'modelId', 256),
+        elementId: opaqueId(input.elementId, 'elementId', 256),
         fallbackPoint: vec3(input.fallbackPoint, 'fallback point'),
       };
     case 'region': {
@@ -880,19 +879,23 @@ function normalizeContent(value: unknown): AnnotationContent {
 }
 
 /**
- * Identifiers that only mean something to the host. Checked for length and for control characters,
- * because the three parts are later joined with one to form a lookup key — a stray one would let a
- * reference split into the wrong pieces.
+ * Identifiers that only mean something to the host — leg ids, model and element ids, tag
+ * references. Checked for length and for control characters, because tag references are later
+ * joined with one to form a lookup key — a stray one would let a reference split into the wrong
+ * pieces.
  */
+function opaqueId(value: unknown, label: string, maxLength: number): string {
+  const result = stringValue(value, label, maxLength);
+  if (result.length === 0 || /[\u0000-\u001f]/u.test(result)) {
+    throw new InvalidDocumentError(`${label} must be a non-empty opaque identifier`);
+  }
+  return result;
+}
+
 function tagReference(value: unknown): TagReference {
   const input = objectValue(value, 'tag reference');
-  const field = (key: 'modelId' | 'elementId' | 'property'): string => {
-    const result = stringValue(input[key], `tag reference ${key}`, 256);
-    if (result.length === 0 || /[\u0000-\u001f]/u.test(result)) {
-      throw new InvalidDocumentError(`tag reference ${key} must be a non-empty opaque identifier`);
-    }
-    return result;
-  };
+  const field = (key: 'modelId' | 'elementId' | 'property'): string =>
+    opaqueId(input[key], `tag reference ${key}`, 256);
   return { modelId: field('modelId'), elementId: field('elementId'), property: field('property') };
 }
 
@@ -924,7 +927,9 @@ function normalizeRouting(value: unknown): AnnotationRouting {
   }
   if (input.kind === 'manual') {
     const vertices = arrayValue(input.vertices, 'manual routing vertices');
-    if (vertices.length > 1_000) throw new DocumentTooLargeError('Manual route has too many vertices');
+    // The same ceiling the route editor enforces (routing.ts): a hand-drawn leader with more bends
+    // than that is a scribble, and one this loader would accept but the editor could not touch.
+    if (vertices.length > 64) throw new DocumentTooLargeError('Manual route has too many vertices');
     return { kind: 'manual', vertices: vertices.map((vertex) => vec2(vertex, 'route vertex')) };
   }
   throw unknownKind('routing', input.kind);
@@ -1244,10 +1249,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 /**
  * Duck-typed rather than `instanceof Promise`: a host may hand back any thenable — a library's own
  * promise, a jQuery deferred — and every one of them splits the transaction the same way.
@@ -1296,14 +1297,6 @@ function sortJson(value: unknown): unknown {
 
 function freezeDocument(document: ViewLeaderDocument): ViewLeaderDocument {
   return deepFreeze(document);
-}
-
-function deepFreeze<Value>(value: Value): Value {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
-    Object.freeze(value);
-  }
-  return value;
 }
 
 function emptyDefinitions(): DefinitionCollections {

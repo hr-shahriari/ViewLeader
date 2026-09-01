@@ -54,7 +54,7 @@ import {
 } from './plugin-authoring.js';
 import type { AnnotationScreenGeometry, InkScreenGeometry, ScreenHit } from './render.js';
 import type { Diagnostic, HostAdapterBundle, NormalizedPointerInput } from './host.js';
-import { ViewLeaderRuntime, type FrameLintOptions, type LayoutStrategies } from './runtime.js';
+import { ViewLeaderRuntime, runCleanupSteps, type FrameLintOptions, type LayoutStrategies } from './runtime.js';
 import type { PlacementMode, ViewportInsets } from './labelPlacer.js';
 import type { LintFinding } from './lint.js';
 import type { Theme } from './theme.js';
@@ -1008,12 +1008,4 @@ function guarded<T extends object>(target: T, check: () => void): T {
     defineProperty: () => false,
     deleteProperty: () => false,
   });
-}
-
-function runCleanupSteps(steps: readonly (() => void)[]): unknown[] {
-  const errors: unknown[] = [];
-  for (const step of steps) {
-    try { step(); } catch (error) { errors.push(error); }
-  }
-  return errors;
 }

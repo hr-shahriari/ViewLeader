@@ -11,8 +11,12 @@
 // `viewleader/markdown` is the worked example, written against exactly this API.
 import { domainError } from './errors.js';
 import type { DeclarativePathCommand, DefinitionBounds } from './definitions.js';
-import { assertJson, type JsonBounds } from './internal/json.js';
+import { deepFreeze } from './internal/freeze.js';
+import { assertJson, exactKeysCheck, type JsonBounds } from './internal/json.js';
+import { finitePoint } from './lint.js';
 import type { JsonObject, JsonValue, PluginEnvelope, Vec2 } from './types.js';
+
+const assertExactKeys = exactKeysCheck((message, details) => domainError('INVALID_PLUGIN', message, details));
 
 export const CORE_EXTENSION_API_VERSION = '1.0.0';
 
@@ -212,7 +216,7 @@ export class ExtensionRuntime {
     if (tool === undefined) {
       throw domainError('INVALID_PLUGIN', `Unknown plugin tool "${toolId}"`, { pluginId, toolId });
     }
-    return clone(tool.initialState);
+    return structuredClone(tool.initialState);
   }
 
   public contentFromTool(
@@ -247,7 +251,7 @@ export class ExtensionRuntime {
       kind: `plugin:${pluginId}`,
       pluginId,
       schemaVersion: descriptor.schemaVersion,
-      data: clone(record.data),
+      data: structuredClone(record.data),
     });
   }
 
@@ -270,7 +274,7 @@ export class ExtensionRuntime {
       validatePluginEnvelope(envelope);
       const descriptor = this.#descriptors.get(envelope.pluginId);
       if (descriptor === undefined) {
-        unresolved.push(clone(envelope));
+        unresolved.push(structuredClone(envelope));
         diagnostics.push({
           code: 'PLUGIN_MISSING',
           pluginId: envelope.pluginId,
@@ -282,7 +286,7 @@ export class ExtensionRuntime {
       }
       const migrated = migrateEnvelope(envelope, descriptor);
       if (migrated === undefined) {
-        unresolved.push(clone(envelope));
+        unresolved.push(structuredClone(envelope));
         diagnostics.push({
           code: 'PLUGIN_MIGRATION_MISSING',
           pluginId: envelope.pluginId,
@@ -305,7 +309,7 @@ export class ExtensionRuntime {
             : `Plugin "${envelope.pluginId}" content did not fully validate`,
         });
       }
-      resolved.push({ envelope: clone(envelope), data: clone(migrated), descriptor });
+      resolved.push({ envelope: structuredClone(envelope), data: structuredClone(migrated), descriptor });
     }
     return { resolved, unresolved, diagnostics };
   }
@@ -332,7 +336,7 @@ export class ExtensionRuntime {
       pluginId: descriptor.id,
       recordType: envelope.recordType,
       schemaVersion: descriptor.schemaVersion,
-      data: clone(migrated),
+      data: structuredClone(migrated),
     };
   }
 
@@ -342,7 +346,7 @@ export class ExtensionRuntime {
     if (renderer === undefined) return [];
     let primitives: readonly DeclarativePrimitive[];
     try {
-      primitives = renderer(record.envelope.recordType, deepFreeze(clone(record.data)));
+      primitives = renderer(record.envelope.recordType, deepFreeze(structuredClone(record.data)));
     } catch (cause) {
       throw domainError('INVALID_PLUGIN', `Plugin "${record.descriptor.id}" renderer failed`, {
         pluginId: record.descriptor.id,
@@ -351,7 +355,7 @@ export class ExtensionRuntime {
       });
     }
     validatePrimitives(primitives);
-    return clone(primitives);
+    return structuredClone(primitives);
   }
 
   public runTool(
@@ -370,10 +374,10 @@ export class ExtensionRuntime {
       throw domainError('INVALID_PLUGIN', `Unknown plugin tool "${toolId}"`, { pluginId, toolId });
     }
     validateToolInput(input);
-    const current = deepFreeze(clone(state ?? tool.initialState));
+    const current = deepFreeze(structuredClone(state ?? tool.initialState));
     let transition: PluginToolTransition;
     try {
-      transition = tool.transition(current, clone(input));
+      transition = tool.transition(current, structuredClone(input));
     } catch (cause) {
       throw domainError('INVALID_PLUGIN', `Plugin tool "${toolId}" failed`, {
         pluginId,
@@ -388,7 +392,7 @@ export class ExtensionRuntime {
     if (transition.status !== undefined && transition.status.length > 1_024) {
       throw domainError('INVALID_PLUGIN', 'Plugin tool status exceeds the string bound', { pluginId, toolId });
     }
-    return clone(transition);
+    return structuredClone(transition);
   }
 
   public dispose(): void {
@@ -541,11 +545,11 @@ function migrateEnvelope(
 ): JsonValue | undefined {
   if (envelope.schemaVersion > descriptor.schemaVersion) return undefined;
   let version = envelope.schemaVersion;
-  let data = clone(envelope.data);
+  let data = structuredClone(envelope.data);
   while (version < descriptor.schemaVersion) {
     const migration = descriptor.migrations?.find(({ from }) => from === version);
     if (migration === undefined) return undefined;
-    const frozen = deepFreeze(clone(data));
+    const frozen = deepFreeze(structuredClone(data));
     try {
       data = migration.migrate(frozen);
     } catch (cause) {
@@ -568,7 +572,7 @@ function callValidator(
   data: JsonValue,
 ): void {
   try {
-    descriptor.validate(recordType, deepFreeze(clone(data)));
+    descriptor.validate(recordType, deepFreeze(structuredClone(data)));
   } catch (cause) {
     if (cause instanceof Error && 'code' in cause) throw cause;
     throw domainError('INVALID_PLUGIN', `Plugin "${descriptor.id}" validation failed`, {
@@ -662,14 +666,6 @@ function validateStableId(id: string, label: string): void {
   }
 }
 
-function assertExactKeys(value: object, allowed: readonly string[], label: string): void {
-  const allowedSet = new Set(allowed);
-  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
-  if (unknown.length > 0) {
-    throw domainError('INVALID_PLUGIN', `${label} contains unsupported fields`, { unknown });
-  }
-}
-
 /**
  * A plugin names the core API it was written against as a caret range — `^1.0.0` — and only the
  * major is compared, because the core API is versioned by breaking change.
@@ -686,23 +682,6 @@ function opaqueReference(reference: string): boolean {
   return typeof reference === 'string' && reference.length > 0 && reference.length <= 512
     && !/^(?:https?:|data:|blob:|file:|\/\/)/iu.test(reference)
     && !/[\u0000-\u001f]/u.test(reference);
-}
-
-function finitePoint(point: Vec2): boolean {
-  return point !== null && typeof point === 'object'
-    && Number.isFinite(point.x) && Number.isFinite(point.y);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
-  return value;
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
 }
 
 export type { JsonObject };

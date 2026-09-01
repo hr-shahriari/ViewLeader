@@ -13,6 +13,7 @@ import {
   type PluginDescriptor,
   type PluginToolTransition,
 } from '../index.js';
+import { isJsonObject } from '../internal/json.js';
 
 type TextPrimitive = Extract<DeclarativePrimitive, { readonly kind: 'text' }>;
 
@@ -611,13 +612,6 @@ function readToolSource(state: JsonValue): string {
     throw markdownError('Markdown tool state is invalid');
   }
   return state.source;
-}
-
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value !== undefined
-    && value !== null
-    && typeof value === 'object'
-    && !Array.isArray(value);
 }
 
 function markdownError(

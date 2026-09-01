@@ -30,6 +30,7 @@ import {
   type TypedDefinition,
 } from './definitions.js';
 import { type DocumentCommit, DocumentEngine } from './document.js';
+import { deepFreeze } from './internal/freeze.js';
 import { AdapterError, InvalidInputError } from './errors.js';
 import {
   type DeclarativePrimitive,
@@ -1750,7 +1751,7 @@ export class ViewLeaderRuntime {
   }
 }
 
-function runCleanupSteps(steps: readonly (() => void)[]): unknown[] {
+export function runCleanupSteps(steps: readonly (() => void)[]): unknown[] {
   const errors: unknown[] = [];
   for (const step of steps) {
     try { step(); } catch (error) { errors.push(error); }
@@ -2012,10 +2013,4 @@ function freezeOverrides(overrides: SavedViewAnnotationOverrides): SavedViewAnno
     Object.freeze(override);
   }
   return Object.freeze(clone);
-}
-
-function deepFreeze(value: unknown): void {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return;
-  for (const child of Object.values(value)) deepFreeze(child);
-  Object.freeze(value);
 }

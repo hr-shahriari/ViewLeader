@@ -1,4 +1,27 @@
-import type { JsonValue } from '../types.js';
+import type { JsonObject, JsonValue } from '../types.js';
+
+export function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Strict when authoring, forgiving when loading — the same rule everywhere.
+ *
+ * Loading, an unrecognised field belongs to a newer version, so it is reported through
+ * `unrecognized` and carried. Authoring, it is a typo, and the author hears about it — through
+ * `fail`, which each module binds to its own error — where they made it.
+ */
+export function exactKeysCheck(
+  fail: (message: string, details: Readonly<Record<string, unknown>>) => Error,
+): (value: object, allowed: readonly string[], label: string, unrecognized?: string[]) => void {
+  return (value, allowed, label, unrecognized) => {
+    const allowedSet = new Set(allowed);
+    const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
+    if (unknown.length === 0) return;
+    if (unrecognized === undefined) throw fail(`${label} contains unsupported fields`, { unknown });
+    for (const key of unknown) unrecognized.push(`${label}.${key}`);
+  };
+}
 
 /**
  * How much of a JSON value a caller is prepared to hold. Anything left out is unbounded here,
