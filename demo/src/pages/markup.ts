@@ -52,7 +52,6 @@ try {
       vertices: [{ x: -1.4, y: 1.1 }, { x: 1.4, y: 1.1 }, { x: 1.4, y: 3.2 }, { x: -1.4, y: 3.2 }],
       arcLength: 0.35,
     },
-    'keyboard',
   );
   leader.authoring.markup.complete();
   await cloud;
