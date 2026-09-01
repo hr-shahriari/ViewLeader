@@ -1,12 +1,3 @@
-export {
-  BoundaryLifecycle,
-  CapabilitySubscription,
-  type BoundaryOptions,
-  type DisposableViewLeader,
-  type SnapshotSource,
-  type ViewLeaderFactory,
-} from '../internal/lifecycle.js';
-
 /**
  * A Vue ref, recognised by shape rather than by importing Vue's own type. Keeps this file usable
  * from tests and from the plain-object path without pulling Vue in.

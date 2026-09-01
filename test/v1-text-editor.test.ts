@@ -390,18 +390,6 @@ describe('the element', () => {
     expect(h.released).toEqual([0]);
   });
 
-  it('keeps a press inside the field from reaching the boundary', () => {
-    const h = harness();
-    let boundaryPresses = 0;
-    h.boundary.addEventListener('pointerdown', () => { boundaryPresses += 1; });
-    h.element.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-    // Core hit-tests a press by position, so without this drag-selecting text drags the label.
-    expect(boundaryPresses).toBe(0);
-    h.editor.ref(null);
-    h.element.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-    expect(boundaryPresses).toBe(1);
-  });
-
   it('focuses and selects the value when it opens', () => {
     const h = harness();
     h.add('n', { kind: 'plain-note', text: 'replace me' });

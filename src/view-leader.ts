@@ -25,7 +25,6 @@ import {
 } from './document.js';
 import {
   EditingController,
-  type EditingCancellationReason,
   type EditingOptions,
   type EditingSnapshot,
 } from './editing.js';
@@ -77,7 +76,7 @@ import type {
   Vec2,
   ViewLeaderDocument,
 } from './types.js';
-import { linkFrameSeam, unlinkFrameSeam } from './internal/frame-seam.js';
+import { clearFrameSeam, linkFrameSeam } from './internal/frame-seam.js';
 
 export interface ViewLeaderOptions {
   /**
@@ -276,7 +275,7 @@ export interface EditingCapability extends SnapshotCapability<EditingSnapshot> {
   pointerMove(pointer: NormalizedPointerInput): void;
   pointerUp(pointer: NormalizedPointerInput): void;
   /** Abandons the gesture. Costs no undo step, because nothing was written. */
-  cancel(reason?: EditingCancellationReason): void;
+  cancel(): void;
 }
 
 interface PreparedReplacement {
@@ -633,7 +632,7 @@ export class ViewLeader {
     this.#disposed = true;
     // Before the steps below: a subscribe racing disposal should find nothing rather than a
     // plausible-looking subscription to an emitter that will never fire again.
-    unlinkFrameSeam(this);
+    clearFrameSeam(this);
     const cleanupErrors = runCleanupSteps([
       () => this.#views.dispose(),
       () => this.#pluginAuthoring.dispose(),
@@ -832,10 +831,7 @@ export class ViewLeader {
       },
       pointerMove: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerMove(pointer); },
       pointerUp: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerUp(pointer); },
-      cancel: (reason?: EditingCancellationReason) => {
-        this.#assertActive();
-        this.#editing.cancel(reason);
-      },
+      cancel: () => { this.#assertActive(); this.#editing.cancel(); },
     });
   }
 

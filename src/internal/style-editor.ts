@@ -20,7 +20,7 @@ import {
 } from '../definitions.js';
 import { ViewLeaderError } from '../errors.js';
 import type { AnnotationPatch } from '../types.js';
-import type { AnnotationsCapability, HistoryCapability } from '../view-leader.js';
+import type { ViewLeader } from '../view-leader.js';
 import { revisionCache } from './snapshot-cache.js';
 
 /** Every field an override can carry — the style's visual fields, never its identity. */
@@ -65,32 +65,6 @@ export interface StyleEditorSnapshot {
   readonly fields: StyleFieldStates;
 }
 
-/** Undo labels. They surface in `HistorySnapshot.undoLabel`, so the host gets to name them. */
-export interface StyleEditorLabels {
-  readonly set?: string;
-  readonly clear?: string;
-  readonly assign?: string;
-}
-
-export interface StyleEditorOptions {
-  readonly labels?: StyleEditorLabels;
-}
-
-/** Narrower than the capabilities themselves, so a test can fake it without a viewer. */
-export interface StyleEditorHost {
-  readonly annotations: Pick<
-    AnnotationsCapability,
-    'getSnapshot' | 'subscribe' | 'get' | 'update' | 'resolvedStyle'
-  >;
-  readonly history: Pick<HistoryCapability, 'transaction'>;
-}
-
-const DEFAULT_LABELS = {
-  set: 'Change annotation style',
-  clear: 'Revert annotation style',
-  assign: 'Assign annotation style',
-} as const;
-
 const EMPTY_SNAPSHOT: StyleEditorSnapshot = Object.freeze({
   ids: Object.freeze([]),
   styleId: undefined,
@@ -112,14 +86,12 @@ type MutableStyleOverride = { -readonly [Key in keyof StyleOverride]: StyleOverr
  * each of those would be the very cost the ref-based following elsewhere exists to avoid.
  */
 export class StyleEditor {
-  readonly #host: StyleEditorHost;
-  readonly #labels: Required<StyleEditorLabels>;
+  readonly #host: Pick<ViewLeader, 'annotations' | 'history'>;
   readonly #cache = revisionCache<StyleEditorSnapshot>();
   #last: StyleEditorSnapshot | undefined;
 
-  public constructor(host: StyleEditorHost, options: StyleEditorOptions = {}) {
+  public constructor(host: Pick<ViewLeader, 'annotations' | 'history'>) {
     this.#host = host;
-    this.#labels = { ...DEFAULT_LABELS, ...options.labels };
   }
 
   public getSnapshot(): StyleEditorSnapshot {
@@ -154,7 +126,7 @@ export class StyleEditor {
    * one level down so `landing`/`content` compose instead of clobbering, and written back whole.
    */
   public set<Key extends StyleField>(field: Key, value: NonNullable<StyleOverride[Key]>): void {
-    this.#write(this.#labels.set, (id) => ({
+    this.#write('Change annotation style', (id) => ({
       styleOverride: mergeStyleOverride(this.#own(id), { [field]: value } as StyleOverride),
     }));
   }
@@ -167,7 +139,7 @@ export class StyleEditor {
    * annotation — `fields[field].source` is what tells a panel that before the user clicks.
    */
   public clear(field: StyleField): void {
-    this.#write(this.#labels.clear, (id) => {
+    this.#write('Revert annotation style', (id) => {
       const rest: MutableStyleOverride = { ...this.#own(id) };
       delete rest[field];
       // Folding an emptied override back to `null` keeps the document canonical, so reverting the
@@ -187,7 +159,7 @@ export class StyleEditor {
    * style's own key set, and is a follow-on if a panel ever asks for it.
    */
   public assignStyle(styleId: string | null): void {
-    this.#write(this.#labels.assign, () => ({ styleId, styleOverride: null }));
+    this.#write('Assign annotation style', () => ({ styleId, styleOverride: null }));
   }
 
   /** The annotation's own stored override, typed. */
@@ -198,6 +170,7 @@ export class StyleEditor {
     return readStyleOverride(this.#host.annotations.get(id)?.styleOverride);
   }
 
+  /** `label` surfaces in `HistorySnapshot.undoLabel`. */
   #write(label: string, patch: (id: string) => AnnotationPatch): void {
     const { ids } = this.getSnapshot();
     if (ids.length === 0) return;

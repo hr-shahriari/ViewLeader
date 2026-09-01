@@ -32,10 +32,9 @@
 // handle exactly once, at press time — so it is only the drawing that goes wrong. Freezing is the
 // cheapest correct answer; remapping would re-implement `#routeFor`/`#regionFor` off a snapshot that
 // does not publish where the insert happened.
-import type { EditingCancellationReason, EditingDragKind, EditingSnapshot } from '../editing.js';
+import { regionDragKind, type EditingDragKind, type EditingSnapshot } from '../editing.js';
 import type { NormalizedPointerInput } from '../host.js';
 import { normalizePointer } from '../pointer.js';
-import type { RegionHandle } from '../render.js';
 import {
   followTargetKey,
   type FollowGeometrySource,
@@ -90,32 +89,11 @@ export interface HandleEntry {
   /**
    * Stable across frames and re-renders, and unique within the annotation.
    *
-   * The follow registry's target key, which includes the leg — `kind + index` is *not* unique, since
-   * a two-leg note publishes `midpoint:0` twice, once per leg.
+   * The follow registry's target key, which carries the leg — a two-leg note publishes a first
+   * midpoint twice, once per leg, so the kind and ordinal alone would not be unique.
    */
   readonly key: string;
   readonly kind: HandleKind;
-  /** The leg this handle belongs to. `undefined` on an ink point, which has no legs. */
-  readonly legId: string | undefined;
-  /**
-   * Position in the geometry array this handle came from — `handles`, `routeHandles`,
-   * `regionHandles`, or a stroke's `points`.
-   *
-   * This, not `index`, is what all four `begin*Drag` methods take. The two are different numbers and
-   * both are called `index` in core, which is the trap this pair of names exists to close.
-   */
-  readonly slot: number;
-  /**
-   * The vertex or segment ordinal within this leg. `undefined` on an extent handle, which has no
-   * ordinal.
-   *
-   * **Not an index into the annotation's `anchors`.** For an annotation handle this is the position
-   * in the *planned* legs of the current frame, and planning drops legs whose anchors are off
-   * screen — so the numbers diverge exactly when part of the annotation has scrolled out of view.
-   * Splice `anchors` by matching {@link legId}; that is the only identifier that survives a leg
-   * being culled.
-   */
-  readonly index: number | undefined;
   /** Hand to the follow registry, or to {@link HandlesController.ref}. */
   readonly target: FollowTarget;
   /**
@@ -140,7 +118,7 @@ export interface HandleEditingPort {
   beginInkPointDrag(id: string, index: number, pointer: NormalizedPointerInput): void;
   pointerMove(pointer: NormalizedPointerInput): void;
   pointerUp(pointer: NormalizedPointerInput): void;
-  cancel(reason?: EditingCancellationReason): void;
+  cancel(): void;
 }
 
 /** The two registry calls the controller makes. `FollowRegistry` satisfies it. */
@@ -188,8 +166,8 @@ const EMPTY: readonly HandleEntry[] = Object.freeze([]);
  * framework-free so both can be tested through one implementation.
  *
  * The target is fixed at construction. A binding whose annotation id changes builds a new
- * controller, which is what `BoundaryLifecycle` does for the element and costs nothing here — the
- * only thing a controller accumulates is registrations for handles that no longer exist.
+ * controller, exactly as it builds a new `ViewLeader` for a new element, and that costs nothing
+ * here — the only thing a controller accumulates is registrations for handles that no longer exist.
  *
  * **What publishes, and what does not.** `annotations` and `editing` are the only two things that
  * can change which handles exist, so they are the only two things that arm a check. But the set is
@@ -215,8 +193,8 @@ export class HandlesController {
   #frozen = false;
   /** A publish has arrived whose effect on the set is not visible until the next frame is drawn. */
   #pending = false;
-  /** Removed on release, so nothing global is bound while no gesture is running. */
-  #escape: (() => void) | undefined;
+  /** Aborted on release, so nothing global is bound while no gesture is running. */
+  #escape: AbortController | undefined;
   #disposed = false;
 
   public constructor(options: HandlesControllerOptions) {
@@ -350,71 +328,41 @@ export class HandlesController {
     if (typeof target !== 'string') {
       const points = this.#host.geometry.ofInk(target.ink)?.points;
       if (points === undefined || points.length === 0) return EMPTY;
-      return Object.freeze(points.map((_point, slot) => this.#entry({
-        kind: 'ink-point',
-        legId: undefined,
-        slot,
-        index: slot,
-        id: target.ink,
-        followTarget: { kind: 'ink-point', id: target.ink, index: slot },
-      })));
+      return Object.freeze(points.map((_point, slot) =>
+        this.#entry('ink-point', target.ink, slot, { kind: 'ink-point', id: target.ink, index: slot })));
     }
     const geometry = this.#host.geometry.of(target);
     if (geometry === undefined) return EMPTY;
     const entries: HandleEntry[] = [];
-    geometry.handles.forEach((handle, slot) => entries.push(this.#entry({
-      kind: 'handle',
-      legId: handle.target,
-      slot,
-      // An annotation handle's own `index` is the leg's position in `anchors` — a third meaning of
-      // the word, and not an ordinal a host would splice with.
+    geometry.handles.forEach((handle, slot) => entries.push(
+      this.#entry('handle', target, slot, { kind: 'handle', id: target, leg: handle.target }),
+    ));
+    geometry.routeHandles.forEach((handle, slot) => entries.push(this.#entry(handle.kind, target, slot, {
+      kind: 'route-handle',
+      id: target,
+      leg: handle.target,
+      handleKind: handle.kind,
       index: handle.index,
-      id: target,
-      followTarget: { kind: 'handle', id: target, leg: handle.target },
     })));
-    geometry.routeHandles.forEach((handle, slot) => entries.push(this.#entry({
-      kind: handle.kind,
-      legId: handle.target,
-      slot,
-      index: handle.index,
-      id: target,
-      followTarget: {
-        kind: 'route-handle',
-        id: target,
-        leg: handle.target,
-        handleKind: handle.kind,
-        index: handle.index,
-      },
-    })));
-    geometry.regionHandles.forEach((handle, slot) => entries.push(this.#entry({
-      kind: regionHandleKind(handle),
-      legId: handle.target,
-      slot,
-      index: handle.kind === 'extent' ? undefined : handle.index,
-      id: target,
-      // The registry resolves a region handle by array position, not by ordinal — a rectangle's
-      // extent handles have no ordinal at all.
-      followTarget: { kind: 'region-handle', id: target, index: slot },
-    })));
+    // The registry resolves a region handle by array position, not by ordinal — a rectangle's
+    // extent handles have no ordinal at all.
+    geometry.regionHandles.forEach((handle, slot) => entries.push(
+      this.#entry(regionDragKind(handle), target, slot, { kind: 'region-handle', id: target, index: slot }),
+    ));
     return Object.freeze(entries);
   }
 
-  #entry(parts: {
-    readonly kind: HandleKind;
-    readonly legId: string | undefined;
-    readonly slot: number;
-    readonly index: number | undefined;
-    readonly id: string;
-    readonly followTarget: FollowTarget;
-  }): HandleEntry {
-    const { kind, slot, id } = parts;
+  /**
+   * `slot` is the position in the geometry array the handle came from — `handles`, `routeHandles`,
+   * `regionHandles`, or a stroke's `points` — which is what every `begin*Drag` takes. It is closed
+   * over rather than published: the key already identifies the handle, and a host has no use for
+   * the number.
+   */
+  #entry(kind: HandleKind, id: string, slot: number, target: FollowTarget): HandleEntry {
     return Object.freeze({
-      key: followTargetKey(parts.followTarget),
+      key: followTargetKey(target),
       kind,
-      legId: parts.legId,
-      slot,
-      index: parts.index,
-      target: parts.followTarget,
+      target,
       cursor: kind === 'midpoint' || kind === 'region-midpoint' ? 'copy' : 'move',
       props: Object.freeze({
         onPointerDown: (event: HandlePointerEvent): void => this.#down(kind, id, slot, event),
@@ -428,7 +376,7 @@ export class HandlesController {
         // undo step, so an over-eager one is cheap.
         onLostPointerCapture: (): void => {
           this.#releaseEscape();
-          this.#host.editing.cancel('pointer-exit');
+          this.#host.editing.cancel();
         },
       }),
     });
@@ -469,42 +417,31 @@ export class HandlesController {
 
   #bindEscape(): void {
     if (this.#escape !== undefined) return;
-    const owner = this.#boundary.ownerDocument;
-    const listener = (event: Event): void => {
-      if ((event as KeyboardEvent).key !== 'Escape') return;
+    this.#escape = new AbortController();
+    this.#boundary.ownerDocument.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
       event.preventDefault();
       this.#releaseEscape();
-      this.#host.editing.cancel('escape');
-    };
-    owner.addEventListener('keydown', listener);
-    this.#escape = () => owner.removeEventListener('keydown', listener);
+      this.#host.editing.cancel();
+    }, { signal: this.#escape.signal });
   }
 
   #releaseEscape(): void {
-    this.#escape?.();
+    this.#escape?.abort();
     this.#escape = undefined;
   }
-}
-
-/** `regionDragKind` in `editing.ts` says the same thing but is not exported. */
-function regionHandleKind(handle: RegionHandle): HandleKind {
-  return handle.kind === 'extent' ? 'region-extent' : `region-${handle.kind}`;
 }
 
 /**
  * The structural-equality gate.
  *
- * Only the three scalars that are not implied by each other: `key` carries the kind, the leg and —
- * for route and ink handles — the ordinal; `slot` and `index` can still move independently of it
- * when a leg drops out of the frustum or a leg is added. No coordinate is compared because no
+ * Keys, position by position. A key carries the kind, the leg and — for route, region and ink
+ * handles — the ordinal, and entries are emitted in geometry order, so two lists whose keys agree
+ * at every position also agree on every closed-over slot. No coordinate is compared because no
  * coordinate is on the entry, which is what keeps an orbit from republishing the list.
  */
 function sameShape(a: readonly HandleEntry[], b: readonly HandleEntry[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((entry, position) => {
-    const other = b[position]!;
-    return entry.key === other.key && entry.slot === other.slot && entry.index === other.index;
-  });
+  return a.length === b.length && a.every((entry, position) => entry.key === b[position]!.key);
 }
 
 /** Duck-typed and swallowed, exactly as core does at its own capture site: a detached node throws,

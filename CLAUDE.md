@@ -103,9 +103,10 @@ The host drives it: call `update()` from its own render loop. There is no self-d
 - [src/saved-views/](src/saved-views/) — engine-neutral camera/visibility state, saved views and
   linear tours. `neutral-types.ts` is a hard boundary: no engine, control or loader type crosses it.
 - [src/interchange/](src/interchange/) — BCF 2.1 read/write plus the archive and XML plumbing.
-- [src/react/](src/react/), [src/vue/](src/vue/) — thin bindings over
-  [src/internal/lifecycle.ts](src/internal/lifecycle.ts), which keys instance identity on the
-  boundary *element* so a re-render cannot leak a second overlay.
+- [src/react/](src/react/), [src/vue/](src/vue/) — thin bindings. Each builds one `ViewLeader` per
+  mounted boundary *element* and disposes it when the element goes, so a re-render cannot leak a
+  second overlay. The framework-agnostic controllers both entries hand to a host are re-exported
+  once from [src/internal/host-toolkit.ts](src/internal/host-toolkit.ts).
 
 ## Conventions
 

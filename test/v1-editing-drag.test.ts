@@ -284,7 +284,7 @@ describe('editing: preview is frame state, not document state', () => {
     leader.update();
     expect(leader.geometry.of('a1')!.label.x).toBe(690);
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
     expect(leader.geometry.of('a1')!.label).toMatchObject({ x: 500, y: 380 });
     expect(leader.history.getSnapshot().undoCount).toBe(before);

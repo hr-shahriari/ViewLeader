@@ -345,7 +345,7 @@ describe('region grips: moving on its own plane', () => {
     expect(leader.geometry.of('a1')!.regionHandles[0]!.at.x).toBeCloseTo(400, 3);
     expect(leader.annotations.get('a1')).toEqual(before);
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
     expect(leader.geometry.of('a1')!.regionHandles[0]!.at.x).toBeCloseTo(300, 3);
     expect(leader.annotations.get('a1')).toEqual(before);
