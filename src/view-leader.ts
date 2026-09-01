@@ -60,12 +60,7 @@ import { ViewLeaderRuntime, type FrameLintOptions, type LayoutStrategies } from 
 import type { PlacementMode, ViewportInsets } from './labelPlacer.js';
 import type { LintFinding } from './lint.js';
 import type { Theme } from './theme.js';
-import {
-  createViewsCapability,
-  prepareViewsDocument,
-  type CreatedViewsCapability,
-  type ViewsCapability,
-} from './views.js';
+import { createViewsCapability, prepareViewsDocument, type ViewsCapability } from './views.js';
 import type {
   Anchor,
   Annotation,
@@ -309,7 +304,7 @@ export class ViewLeader {
   readonly #markup: MarkupAuthoringCapability;
   readonly #pluginAuthoring: PluginAuthoringController;
   readonly #extensions: ExtensionRuntime;
-  readonly #views: CreatedViewsCapability;
+  readonly #views: ReturnType<typeof createViewsCapability>;
   #disposed = false;
 
   public constructor(options: ViewLeaderOptions) {
@@ -359,7 +354,7 @@ export class ViewLeader {
       throw error;
     }
     invalidateRuntime = () => this.#runtime.invalidate();
-    let views: CreatedViewsCapability | undefined;
+    let views: ReturnType<typeof createViewsCapability> | undefined;
     let authoring: AuthoringController | undefined;
     let editing: EditingController | undefined;
     let pluginAuthoring: PluginAuthoringController | undefined;
@@ -371,7 +366,6 @@ export class ViewLeader {
         ...(options.adapters.viewerState === undefined
           ? {}
           : { viewerState: options.adapters.viewerState }),
-        assertActive: () => this.#assertActive(),
       });
       this.#views = views;
       authoring = new AuthoringController(options.boundary, this.#document, this.#runtime);
@@ -456,7 +450,7 @@ export class ViewLeader {
       this.documents = this.#createDocumentsCapability();
       this.history = this.#createHistoryCapability();
       this.definitions = this.#guardDefinitions(definitions);
-      this.views = this.#views.capability;
+      this.views = this.#views;
       this.diagnostics = Object.freeze({
         getSnapshot: () => {
           this.#assertActive();

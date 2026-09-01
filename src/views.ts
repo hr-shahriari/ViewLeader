@@ -7,26 +7,14 @@
 import { InvalidConfigurationError, InvalidDocumentError } from './errors.js';
 import type { Diagnostic } from './host.js';
 import { DocumentEngine, applyResidue, residueOf } from './document.js';
-import type {
-  JsonObject,
-  SnapshotCapability,
-  ViewLeaderDocument,
-} from './types.js';
+import type { JsonObject, ViewLeaderDocument } from './types.js';
 import type { ViewLeaderRuntime } from './runtime.js';
-import {
-  SavedViewCoordinator,
-  type CaptureNeutralSavedViewInput,
-  type UpdateSavedViewInput,
-} from './saved-views/coordinator.js';
+import { SavedViewCoordinator } from './saved-views/coordinator.js';
 import type {
   LinearTourDefinition,
   MutableSavedViewDocument,
   SavedViewDefinition,
   SavedViewDocumentPort,
-  SavedViewRemovalReferences,
-  SavedViewsRuntimeSnapshot,
-  TourPlaybackOutcome,
-  ViewActivationOutcome,
   ViewerStateAdapter,
 } from './saved-views/neutral-types.js';
 import {
@@ -34,49 +22,8 @@ import {
   normalizeSavedViewDefinition,
 } from './saved-views/neutral-validation.js';
 
-export interface ViewsCapability
-  extends SnapshotCapability<SavedViewsRuntimeSnapshot> {
-  get(id: string): SavedViewDefinition | undefined;
-  list(): readonly SavedViewDefinition[];
-  insert(definition: SavedViewDefinition): SavedViewDefinition;
-  save(input: CaptureNeutralSavedViewInput): Promise<SavedViewDefinition>;
-  update(
-    id: string,
-    input?: UpdateSavedViewInput,
-  ): Promise<SavedViewDefinition>;
-  inspectRemoval(id: string): SavedViewRemovalReferences;
-  remove(
-    id: string,
-    options?: { readonly cascade?: boolean },
-  ): Promise<SavedViewDefinition>;
-  createTour(definition: LinearTourDefinition): LinearTourDefinition;
-  updateTour(definition: LinearTourDefinition): LinearTourDefinition;
-  removeTour(id: string): LinearTourDefinition;
-  activate(
-    id: string,
-    options?: { readonly transitionDurationMs?: number },
-  ): Promise<ViewActivationOutcome>;
-  cancelActivation(reason?: string): void;
-  playTour(
-    id: string,
-    options?: { readonly startIndex?: number },
-  ): Promise<TourPlaybackOutcome>;
-  pauseTour(): void;
-  seekTour(id: string, stepIndex: number): Promise<ViewActivationOutcome>;
-  cancelTour(reason?: string): void;
-}
-
-export interface CreateViewsCapabilityOptions {
-  readonly document: DocumentEngine;
-  readonly runtime: ViewLeaderRuntime;
-  readonly viewerState?: ViewerStateAdapter;
-  readonly assertActive: () => void;
-}
-
-export interface CreatedViewsCapability {
-  readonly capability: ViewsCapability;
-  dispose(): void;
-}
+/** The `views` capability is the coordinator itself. Disposal belongs to `ViewLeader`. */
+export type ViewsCapability = Omit<SavedViewCoordinator, 'dispose'>;
 
 /**
  * Checks and tidies the saved views in a document before it is allowed to load.
@@ -91,26 +38,18 @@ export function prepareViewsDocument(
   try {
     const viewResidue = residueByIdOf(document.savedViews, decodeSavedView, 'saved view');
     const tourResidue = residueByIdOf(document.tours, decodeTour, 'tour');
-    const savedViews = document.savedViews
-      .map(decodeSavedView)
-      .sort(compareDefinitions);
-    assertUniqueDefinitionIds(savedViews, 'saved view');
+    const savedViews = document.savedViews.map(decodeSavedView).sort(byId);
+    const tours = document.tours.map(decodeTour).sort(byId);
+    assertUniqueIds(savedViews, 'saved view');
+    assertUniqueIds(tours, 'tour');
     const viewIds = new Set(savedViews.map(({ id }) => id));
-    const tours = document.tours
-      .map(decodeTour)
-      .sort(compareDefinitions);
-    assertUniqueDefinitionIds(tours, 'tour');
     for (const tour of tours) {
-      const missingViewIds = [
-        ...new Set(
-          tour.steps
-            .map(({ viewId }) => viewId)
-            .filter((viewId) => !viewIds.has(viewId)),
-        ),
-      ].sort();
-      if (missingViewIds.length > 0) {
+      const missing = [...new Set(
+        tour.steps.map(({ viewId }) => viewId).filter((viewId) => !viewIds.has(viewId)),
+      )].sort();
+      if (missing.length > 0) {
         throw new TypeError(
-          `Tour "${tour.id}" references missing saved views: ${missingViewIds.join(', ')}`,
+          `Tour "${tour.id}" references missing saved views: ${missing.join(', ')}`,
         );
       }
     }
@@ -128,18 +67,15 @@ export function prepareViewsDocument(
   }
 }
 
-/**
- * Wires the saved-view machinery up to this ViewLeader's document and viewer, and exposes it as the
- * `views` capability a host uses.
- */
-export function createViewsCapability(
-  options: CreateViewsCapabilityOptions,
-): CreatedViewsCapability {
-  const documentPort = new CanonicalViewsDocumentPort(options.document);
-  const viewerState = options.viewerState ?? unavailableViewerState;
-  const coordinator = new SavedViewCoordinator({
-    document: documentPort,
-    viewerState,
+/** Wires the saved-view coordinator up to this ViewLeader's document and viewer. */
+export function createViewsCapability(options: {
+  readonly document: DocumentEngine;
+  readonly runtime: ViewLeaderRuntime;
+  readonly viewerState?: ViewerStateAdapter;
+}) {
+  return new SavedViewCoordinator({
+    document: new CanonicalViewsDocumentPort(options.document),
+    viewerState: options.viewerState ?? unavailableViewerState,
     annotationViews: {
       capture: () => options.runtime.captureAnnotationView(),
       apply: (viewId, overrides) => {
@@ -164,55 +100,6 @@ export function createViewsCapability(
       };
       options.runtime.publishExternalDiagnostic(diagnostic);
     },
-  });
-  const active = <Result>(operation: () => Result): Result => {
-    options.assertActive();
-    return operation();
-  };
-  const snapshot = (): SavedViewsRuntimeSnapshot => {
-    options.assertActive();
-    const current = coordinator.getSnapshot();
-    return Object.freeze({
-      ...current,
-      runtimeRevision: options.runtime.runtimeRevision,
-      documentRevision: options.document.documentRevision,
-    });
-  };
-  const capability: ViewsCapability = Object.freeze({
-    getSnapshot: snapshot,
-    subscribe: (listener: () => void) =>
-      active(() => options.runtime.subscribe(listener)),
-    get: (id: string) => active(() => coordinator.get(id)),
-    list: () => active(() => coordinator.list()),
-    insert: (definition: SavedViewDefinition) =>
-      active(() => coordinator.insert(definition)),
-    save: (input: CaptureNeutralSavedViewInput) =>
-      active(() => coordinator.save(input)),
-    update: (id: string, input: UpdateSavedViewInput = {}) =>
-      active(() => coordinator.update(id, input)),
-    inspectRemoval: (id: string) =>
-      active(() => coordinator.inspectRemoval(id)),
-    remove: (id: string, removeOptions = {}) =>
-      active(() => coordinator.remove(id, removeOptions)),
-    createTour: (definition: LinearTourDefinition) =>
-      active(() => coordinator.createTour(definition)),
-    updateTour: (definition: LinearTourDefinition) =>
-      active(() => coordinator.updateTour(definition)),
-    removeTour: (id: string) => active(() => coordinator.removeTour(id)),
-    activate: (id: string, activationOptions = {}) =>
-      active(() => coordinator.activate(id, activationOptions)),
-    cancelActivation: (reason?: string) =>
-      active(() => coordinator.cancelActivation(reason)),
-    playTour: (id: string, playOptions = {}) =>
-      active(() => coordinator.playTour(id, playOptions)),
-    pauseTour: () => active(() => coordinator.pauseTour()),
-    seekTour: (id: string, stepIndex: number) =>
-      active(() => coordinator.seekTour(id, stepIndex)),
-    cancelTour: (reason?: string) => active(() => coordinator.cancelTour(reason)),
-  });
-  return Object.freeze({
-    capability,
-    dispose: () => coordinator.dispose(),
   });
 }
 
@@ -252,28 +139,11 @@ class CanonicalViewsDocumentPort implements SavedViewDocumentPort {
         tours: document.tours.map(decodeTour),
       };
       const result = operation(draft);
-      const savedViews = draft.savedViews.map((view) => normalizeSavedViewDefinition(view));
-      const viewIds = new Set(savedViews.map(({ id }) => id));
-      const tours = draft.tours.map((tour) =>
-        normalizeLinearTourDefinition(tour, { allowEmpty: true }),
-      );
-      for (const tour of tours) {
-        const missing = tour.steps
-          .map(({ viewId }) => viewId)
-          .filter((viewId) => !viewIds.has(viewId));
-        if (missing.length > 0) {
-          throw new TypeError(
-            `Tour "${tour.id}" references missing views: ${[
-              ...new Set(missing),
-            ].sort().join(', ')}`,
-          );
-        }
-      }
       return {
         document: {
           ...document,
-          savedViews: savedViews.map((view) => encodeJsonObject(view, viewResidue)),
-          tours: tours.map((tour) => encodeJsonObject(tour, tourResidue)),
+          savedViews: draft.savedViews.map((view) => encodeJsonObject(view, viewResidue)),
+          tours: draft.tours.map((tour) => encodeJsonObject(tour, tourResidue)),
         },
         result,
       };
@@ -295,24 +165,17 @@ function unavailable(): never {
 }
 
 /**
- * The forgiving path, used when opening a file. A saved view written by a newer version is reported
- * and skipped rather than bringing down the whole document.
- *
- * Creating or editing a view goes through the same checks without this leniency, because there a
- * problem is the user's own input and should be refused immediately.
+ * The one place a saved view is parsed out of JSON. Anything the normalizer does not rebuild is
+ * kept beside it as residue, so a file from a newer version survives a round trip untouched.
  */
 function decodeSavedView(value: JsonObject): SavedViewDefinition {
-  return normalizeSavedViewDefinition(
-    structuredClone(value) as unknown as SavedViewDefinition,
-    [],
-  );
+  return normalizeSavedViewDefinition(structuredClone(value) as unknown as SavedViewDefinition);
 }
 
 function decodeTour(value: JsonObject): LinearTourDefinition {
   return normalizeLinearTourDefinition(
     structuredClone(value) as unknown as LinearTourDefinition,
     { allowEmpty: true },
-    [],
   );
 }
 
@@ -346,22 +209,11 @@ function encodeJsonObject(
   return extra === undefined ? encoded : applyResidue(encoded, extra) as JsonObject;
 }
 
-function compareDefinitions(
-  left: SavedViewDefinition | LinearTourDefinition,
-  right: SavedViewDefinition | LinearTourDefinition,
-): number {
+function byId(left: { readonly id: string }, right: { readonly id: string }): number {
   return left.id.localeCompare(right.id);
 }
 
-function assertUniqueDefinitionIds(
-  definitions: readonly (SavedViewDefinition | LinearTourDefinition)[],
-  label: string,
-): void {
-  const seen = new Set<string>();
-  for (const definition of definitions) {
-    if (seen.has(definition.id)) {
-      throw new TypeError(`Duplicate ${label} id: ${definition.id}`);
-    }
-    seen.add(definition.id);
-  }
+function assertUniqueIds(definitions: readonly { readonly id: string }[], label: string): void {
+  const ids = definitions.map(({ id }) => id);
+  if (new Set(ids).size !== ids.length) throw new TypeError(`Duplicate ${label} id`);
 }
