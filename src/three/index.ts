@@ -257,28 +257,22 @@ export function createThreeModelBoundsAdapter(
  * can be re-resolved instead of pointing at whatever happens to hold that id today.
  */
 export function createThreeElementInvalidationChannel(): ThreeElementInvalidationChannel {
-  const listeners = new Set<(invalidation: ElementInvalidation) => void>();
-  let disposed = false;
+  const target = new EventTarget();
+  const lifetime = new AbortController();
   return Object.freeze({
     subscribe(listener: (invalidation: ElementInvalidation) => void): Unsubscribe {
-      if (disposed) return () => undefined;
-      listeners.add(listener);
-      let subscribed = true;
-      return () => {
-        if (!subscribed) return;
-        subscribed = false;
-        listeners.delete(listener);
-      };
+      const onInvalidate = (event: Event): void =>
+        listener((event as CustomEvent<ElementInvalidation>).detail);
+      target.addEventListener('invalidate', onInvalidate, { signal: lifetime.signal });
+      return () => target.removeEventListener('invalidate', onInvalidate);
     },
     invalidate(invalidation: ElementInvalidation = {}): void {
-      if (disposed) return;
-      const event = Object.freeze({ ...invalidation });
-      for (const listener of [...listeners]) listener(event);
+      target.dispatchEvent(
+        new CustomEvent('invalidate', { detail: Object.freeze({ ...invalidation }) }),
+      );
     },
     dispose(): void {
-      if (disposed) return;
-      disposed = true;
-      listeners.clear();
+      lifetime.abort();
     },
   });
 }
@@ -306,13 +300,10 @@ export function createStableElementResolver(
 
 function createProjectionAdapter(options: ThreeAdapterOptions): ProjectionAdapter {
   const canvas = options.renderer?.domElement;
-  const worldSnapshot = new Float64Array(16);
-  const projectionSnapshot = new Float64Array(16);
-  let viewportWidth = Number.NaN;
-  let viewportHeight = Number.NaN;
-  let viewportDevicePixelRatio = Number.NaN;
+  const world = new Matrix4();
+  const projection = new Matrix4();
+  let viewport: ViewportSnapshot | undefined;
   let revision = 0;
-  let initialized = false;
   const getViewport = (): ViewportSnapshot => {
     if (options.viewport !== undefined) return options.viewport();
     const bounds = canvas?.getBoundingClientRect();
@@ -326,24 +317,19 @@ function createProjectionAdapter(options: ThreeAdapterOptions): ProjectionAdapte
     getViewport,
     getRevision: () => {
       options.camera.updateWorldMatrix(true, false);
-      const viewport = getViewport();
-      const world = options.camera.matrixWorld.elements;
-      const projection = options.camera.projectionMatrix.elements;
-      let changed = !initialized
-        || viewport.width !== viewportWidth
-        || viewport.height !== viewportHeight
-        || viewport.devicePixelRatio !== viewportDevicePixelRatio;
-      for (let index = 0; index < 16 && !changed; index += 1) {
-        changed = world[index] !== worldSnapshot[index]
-          || projection[index] !== projectionSnapshot[index];
-      }
-      if (changed) {
-        worldSnapshot.set(world);
-        projectionSnapshot.set(projection);
-        viewportWidth = viewport.width;
-        viewportHeight = viewport.height;
-        viewportDevicePixelRatio = viewport.devicePixelRatio;
-        initialized = true;
+      const current = getViewport();
+      if (
+        viewport === undefined
+        || current.width !== viewport.width
+        || current.height !== viewport.height
+        || current.devicePixelRatio !== viewport.devicePixelRatio
+        || !world.equals(options.camera.matrixWorld)
+        || !projection.equals(options.camera.projectionMatrix)
+      ) {
+        world.copy(options.camera.matrixWorld);
+        projection.copy(options.camera.projectionMatrix);
+        // Copied, not kept by reference: a host may hand back the same mutable object every frame.
+        viewport = { ...current };
         revision += 1;
       }
       return revision;
@@ -431,7 +417,7 @@ export function createThreeOcclusionAdapter(
       samples: readonly OcclusionSample[],
       signal: AbortSignal,
     ): Promise<readonly OcclusionResult[]> {
-      throwIfAborted(signal);
+      signal.throwIfAborted();
       if (!(camera instanceof PerspectiveCamera) && !(camera instanceof OrthographicCamera)) {
         throw new TypeError('Three occlusion requires a perspective or orthographic camera');
       }
@@ -442,7 +428,7 @@ export function createThreeOcclusionAdapter(
       const projected = new Vector3();
       const target = new Vector3();
       return samples.map((sample) => {
-        throwIfAborted(signal);
+        signal.throwIfAborted();
         target.set(sample.worldPoint.x, sample.worldPoint.y, sample.worldPoint.z);
         projected.copy(target).project(camera);
         if (![projected.x, projected.y, projected.z].every(Number.isFinite)) {
@@ -480,9 +466,9 @@ export function createThreeViewerStateAdapter(options: {
   const host = options.host ?? emptyViewerStateHost;
   return Object.freeze({
     async capture(context: { readonly signal: AbortSignal }): Promise<NeutralViewerState> {
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       const captured = await host.capture(context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       return cloneViewerState({
         camera: captureCameraState(options.camera),
         ...captured,
@@ -492,13 +478,13 @@ export function createThreeViewerStateAdapter(options: {
       state: NeutralViewerState,
       context: ThreeViewerStateOperationContext,
     ): Promise<PreparedThreeViewerState> {
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       assertCameraCompatible(options.camera, state);
       const target = cloneViewerState(state);
       await host.validate?.(hostState(target), context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       const previousHost = await host.capture({ signal: context.signal });
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       return Object.freeze({
         target,
         rollback: cloneViewerState({
@@ -511,19 +497,19 @@ export function createThreeViewerStateAdapter(options: {
       prepared: PreparedThreeViewerState,
       context: ThreeViewerStateOperationContext,
     ): Promise<void> {
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       applyCameraState(options.camera, prepared.target);
       await host.apply(hostState(prepared.target), context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
     },
     async rollback(
       prepared: PreparedThreeViewerState,
       context: ThreeViewerStateOperationContext,
     ): Promise<void> {
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       applyCameraState(options.camera, prepared.rollback);
       await host.apply(hostState(prepared.rollback), context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
     },
   });
 }
@@ -751,13 +737,4 @@ function hostState(state: NeutralViewerState): ThreeHostViewerState {
 
 function cloneViewerState(state: NeutralViewerState): NeutralViewerState {
   return structuredClone(state);
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return;
-  const error = new Error(
-    typeof signal.reason === 'string' ? signal.reason : 'Operation cancelled',
-  );
-  error.name = 'AbortError';
-  throw error;
 }
