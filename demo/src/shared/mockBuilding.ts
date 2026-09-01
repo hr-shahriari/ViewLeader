@@ -1,10 +1,5 @@
+import type { Vec3 } from 'viewleader';
 import * as THREE from 'three';
-
-export interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
-}
 
 export interface MockElement {
   /** Stable id a host model would expose (an IFC GlobalId, a Fragments id, …). */

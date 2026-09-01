@@ -1,13 +1,15 @@
 // A saved view captures neutral host camera state; activating it restores that state transactionally
 // (with rollback on failure) and never edits the annotation document. A tour is an ordered playback of
-// saved views. This adapter reads and writes the real Three.js camera, so activation visibly moves it.
-import { ViewLeader, type NeutralViewerState, type ViewerStateAdapter } from 'viewleader';
+// saved views. The harness's adapter reads and writes the real Three.js camera, so activation visibly
+// moves it.
+import { ViewLeader } from 'viewleader';
 import { createThreeAdapter } from 'viewleader/three';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
 import {
   createExampleHarness,
+  createViewerStateAdapter,
   exposeExampleManager,
   markExampleFailed,
   markExampleReady,
@@ -22,39 +24,7 @@ try {
   const building = createMockBuilding();
   harness.scene.add(building.root);
   const { camera, controls } = harness;
-
-  // `direction` stores the full vector from camera to orbit target, so apply() restores distance exactly.
-  const capture = (): NeutralViewerState => ({
-    camera: {
-      projection: 'perspective',
-      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-      direction: { x: controls.target.x - camera.position.x, y: controls.target.y - camera.position.y, z: controls.target.z - camera.position.z },
-      up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
-      verticalFieldOfView: camera.fov,
-      near: camera.near,
-      far: camera.far,
-    },
-    modelVisibility: [],
-    elementVisibility: [],
-    selection: [],
-    colorOverrides: [],
-    clippingPlanes: [],
-  });
-  const applyState = (state: NeutralViewerState): void => {
-    const c = state.camera;
-    camera.position.set(c.position.x, c.position.y, c.position.z);
-    controls.target.set(c.position.x + c.direction.x, c.position.y + c.direction.y, c.position.z + c.direction.z);
-    camera.up.set(c.up.x, c.up.y, c.up.z);
-    if (c.projection === 'perspective') camera.fov = c.verticalFieldOfView;
-    camera.updateProjectionMatrix();
-    controls.update();
-  };
-  const viewerState: ViewerStateAdapter<{ prior: NeutralViewerState; next: NeutralViewerState }> = {
-    capture,
-    prepare: (next) => ({ prior: capture(), next }),
-    apply: ({ next }) => applyState(next),
-    rollback: ({ prior }) => applyState(prior),
-  };
+  const viewerState = createViewerStateAdapter(harness);
 
   const adapters = {
     ...createThreeAdapter({

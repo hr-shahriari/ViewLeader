@@ -3,17 +3,16 @@
  *
  * Layout work is graded against this and nothing else — the demo page, the vitest overlap
  * assertions and the Playwright orbit all import from here so "the crowded scene" means exactly
- * one thing. Pure numbers: no three.js, no DOM, no `viewleader`, so a node-environment test
- * can import it without dragging a renderer in.
+ * one thing. Pure numbers: no three.js, no DOM, and nothing from `viewleader` but the `Vec3`
+ * type, so a node-environment test can import it without dragging a renderer or a runtime in.
  */
-
-export interface Vec3Like { readonly x: number; readonly y: number; readonly z: number }
+import type { Vec3 } from 'viewleader';
 
 export interface CrowdedNote {
   readonly id: string;
   readonly text: string;
   /** World point, in the mock building's coordinates (see `mockBuilding.ts`). */
-  readonly point: Vec3Like;
+  readonly point: Vec3;
 }
 
 /**
@@ -33,23 +32,23 @@ export type CrowdedExtra =
       readonly id: string;
       readonly text: string;
       /** Three legs into one label: the fan-in case. */
-      readonly points: readonly [Vec3Like, Vec3Like, Vec3Like];
+      readonly points: readonly [Vec3, Vec3, Vec3];
     }
   | {
       readonly kind: 'region';
       readonly id: string;
       readonly text: string;
       readonly shape: 'rectangle' | 'revision-cloud';
-      readonly plane: { readonly origin: Vec3Like; readonly normal: Vec3Like; readonly xAxis: Vec3Like };
+      readonly plane: { readonly origin: Vec3; readonly normal: Vec3; readonly xAxis: Vec3 };
       /** Outline in plane coordinates. */
       readonly vertices: readonly { readonly x: number; readonly y: number }[];
-      readonly fallbackPoint: Vec3Like;
+      readonly fallbackPoint: Vec3;
     }
   | {
       readonly kind: 'manual';
       readonly id: string;
       readonly text: string;
-      readonly point: Vec3Like;
+      readonly point: Vec3;
       /** Screen position the user dragged it to, as a fraction of the viewport. */
       readonly at: { readonly x: number; readonly y: number };
     }
@@ -57,15 +56,15 @@ export type CrowdedExtra =
       readonly kind: 'markdown';
       readonly id: string;
       readonly source: string;
-      readonly point: Vec3Like;
+      readonly point: Vec3;
     };
 
 /**
  * Mulberry32. Chosen over `Math.random()` because the whole point is reproducibility, and over an
  * LCG because a bad LCG's low bits are visibly periodic — which would cluster anchors into stripes
- * and make the scene easier than it looks.
+ * and make the scene easier than it looks. Scene B seeds from the same generator.
  */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;
