@@ -437,7 +437,7 @@ export class ViewLeader {
       this.documents = this.#createDocumentsCapability();
       this.history = this.#createHistoryCapability();
       this.definitions = guarded(definitions, this.#assertActive);
-      this.views = this.#views;
+      this.views = guarded(this.#views, this.#assertActive);
       this.diagnostics = guarded({
         getSnapshot: () => this.#runtime.diagnosticsSnapshot(),
         subscribe: (listener: (diagnostic: Diagnostic) => void) =>

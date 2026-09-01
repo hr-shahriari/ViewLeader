@@ -110,8 +110,10 @@ describe('fresh v1 core vertical slice', () => {
     // and still refuses afterwards; a detached class method still reaches its own instance.
     const { getSnapshot } = leader.annotations;
     const { list } = leader.definitions;
+    const { getSnapshot: viewsSnapshot } = leader.views;
     expect(leader.annotations.getSnapshot).toBe(getSnapshot);
     expect(list().length).toBeGreaterThan(0);
+    expect(viewsSnapshot().savedViews).toEqual([]);
     leader.dispose();
     leader.dispose();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
@@ -120,6 +122,7 @@ describe('fresh v1 core vertical slice', () => {
     expect(() => leader.annotations.getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
     expect(() => getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
     expect(() => list()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => viewsSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
   });
 
   it('serializes deterministically and rejects replacement without observable mutation', () => {

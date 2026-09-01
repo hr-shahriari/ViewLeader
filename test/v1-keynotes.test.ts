@@ -191,6 +191,17 @@ describe('keynotes: a leading zero breaks ties, it does not dominate', () => {
     leader.dispose();
   });
 
+  it('compares letters case-insensitively first, so a1 lands beside A1 rather than after Z', () => {
+    // Collator order, not code-point order: 'B1' < 'a1' as code points, which would file every
+    // lower-case key after every upper-case one.
+    const leader = new ViewLeader({ boundary: boundary(), adapters: adapters() });
+    leader.annotations.create(note('k0', 'B1'));
+    leader.annotations.create(note('k1', 'a1'));
+    leader.annotations.create(note('k2', 'A1'));
+    expect(leader.annotations.keynotes().map((entry) => entry.key)).toEqual(['a1', 'A1', 'B1']);
+    leader.dispose();
+  });
+
   it('is a total order: every pair has a stable, consistent direction', () => {
     const keys = ['9 91 23.A3', '09 91 23.A3', '09 91 03.A1', '09 91 23', '09 91 23.A10'];
     const leader = new ViewLeader({ boundary: boundary(), adapters: adapters() });
