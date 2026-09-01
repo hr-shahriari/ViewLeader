@@ -3,14 +3,7 @@
 // Everything drawn stays out of the document until the shape is complete, so an abandoned cloud
 // leaves nothing behind and a finished one is a single undo step.
 import type { DocumentEngine } from './document.js';
-import {
-  AdapterError,
-  DisposedError,
-  InvalidInputError,
-  InvariantViolationError,
-  NotFoundError,
-  ViewLeaderError,
-} from './errors.js';
+import { AdapterError, domainError, ViewLeaderError } from './errors.js';
 import type {
   InteractionAdapter,
   InteractionLease,
@@ -317,7 +310,7 @@ export class MarkupAuthoringCapability {
     const active = this.#active;
     if (active === undefined) return null;
     if (active.phase !== 'ready') {
-      const error = new InvalidInputError('Markup authoring is not ready to complete');
+      const error = domainError('INVALID_INPUT', 'Markup authoring is not ready to complete');
       const outcome = Object.freeze({ status: 'failed' as const, error });
       this.#finish(active, outcome);
       return outcome;
@@ -338,7 +331,7 @@ export class MarkupAuthoringCapability {
     } catch (cause) {
       const error = cause instanceof ViewLeaderError
         ? cause
-        : new InvalidInputError('Markup completion failed', { cause });
+        : domainError('INVALID_INPUT', 'Markup completion failed', { cause });
       const outcome = Object.freeze({ status: 'failed' as const, error });
       this.#finish(active, outcome);
       return outcome;
@@ -396,7 +389,7 @@ export class MarkupAuthoringCapability {
     return this.#document.edit('Create ink', (document) => {
       const records = document.ink.map((stored) => inkFromJson(stored));
       if (records.some(({ id }) => id === ink.id)) {
-        throw new InvalidInputError(`Ink "${ink.id}" already exists`, { id: ink.id });
+        throw domainError('INVALID_INPUT', `Ink "${ink.id}" already exists`, { id: ink.id });
       }
       return {
         document: { ...document, ink: [...document.ink, inkToJson(ink)] },
@@ -425,9 +418,9 @@ export class MarkupAuthoringCapability {
       const records = document.ink.map((stored) => inkFromJson(stored));
       const index = records.findIndex((ink) => ink.id === id);
       const current = records[index];
-      if (current === undefined) throw new NotFoundError('ink', id);
+      if (current === undefined) throw domainError('NOT_FOUND', `Unknown ink: ${id}`, { id });
       const next = update(structuredClone(current));
-      if (next.id !== id) throw new InvalidInputError('An ink update cannot change its id');
+      if (next.id !== id) throw domainError('INVALID_INPUT', 'An ink update cannot change its id');
       this.#validateStyleId(next.styleId);
       const ink = [...document.ink];
       ink[index] = inkToJson(next);
@@ -440,7 +433,7 @@ export class MarkupAuthoringCapability {
     return this.#document.edit('Remove ink', (document) => {
       const records = document.ink.map((stored) => inkFromJson(stored));
       const removed = records.find((ink) => ink.id === id);
-      if (removed === undefined) throw new NotFoundError('ink', id);
+      if (removed === undefined) throw domainError('NOT_FOUND', `Unknown ink: ${id}`, { id });
       return {
         document: { ...document, ink: document.ink.filter((_, index) => records[index]?.id !== id) },
         result: removed,
@@ -458,7 +451,7 @@ export class MarkupAuthoringCapability {
     const annotation = this.#requireAnnotation(annotationId);
     const leg = requireLeg(annotation, legId);
     if (leg.anchor.kind !== 'region') {
-      throw new InvalidInputError(`Anchor leg "${legId}" is not a region`, { annotationId, legId });
+      throw domainError('INVALID_INPUT', `Anchor leg "${legId}" is not a region`, { annotationId, legId });
     }
     const updated = update(regionAnchorFromCore(leg.anchor));
     const anchors = annotation.anchors.map((candidate) => candidate.id === legId
@@ -475,7 +468,7 @@ export class MarkupAuthoringCapability {
     this.#assertUsable();
     const annotation = this.#requireAnnotation(annotationId);
     if (annotation.anchors.some(({ id }) => id === leg.id)) {
-      throw new InvalidInputError(`Duplicate anchor leg "${leg.id}"`, { annotationId, legId: leg.id });
+      throw domainError('INVALID_INPUT', `Duplicate anchor leg "${leg.id}"`, { annotationId, legId: leg.id });
     }
     const target = index ?? annotation.anchors.length;
     validateInsertIndex(target, annotation.anchors.length);
@@ -512,7 +505,7 @@ export class MarkupAuthoringCapability {
     const annotation = this.#requireAnnotation(annotationId);
     requireLeg(annotation, legId);
     if (annotation.anchors.length === 1) {
-      throw new InvariantViolationError('Cannot remove the final annotation anchor', {
+      throw domainError('INVARIANT_VIOLATION', 'Cannot remove the final annotation anchor', {
         annotationId,
         anchorId: legId,
         minimumAnchors: 1,
@@ -535,14 +528,14 @@ export class MarkupAuthoringCapability {
 
   #requireAnnotation(id: string): Annotation {
     const annotation = this.#document.get(id);
-    if (annotation === undefined) throw new NotFoundError('annotation', id);
+    if (annotation === undefined) throw domainError('NOT_FOUND', `Unknown annotation: ${id}`, { id });
     return annotation;
   }
 
   #requireActive(): ActiveMarkupAuthoring {
     this.#assertUsable();
     const active = this.#active;
-    if (active === undefined) throw new InvalidInputError('No markup authoring tool is active');
+    if (active === undefined) throw domainError('INVALID_INPUT', 'No markup authoring tool is active');
     return active;
   }
 
@@ -586,7 +579,7 @@ export class MarkupAuthoringCapability {
   ): Promise<void> {
     const picking = this.#integration.surfacePicking;
     if (picking === undefined) {
-      this.#fail(active, new InvalidInputError('The host adapter does not provide accurate surface picking'));
+      this.#fail(active, domainError('INVALID_INPUT', 'The host adapter does not provide accurate surface picking'));
       return;
     }
     active.pick?.abort();
@@ -601,7 +594,7 @@ export class MarkupAuthoringCapability {
       active.pick = undefined;
       if (hit === null) {
         if (stage === 'down') {
-          this.#fail(active, new InvalidInputError('No model surface was found at that point'));
+          this.#fail(active, domainError('INVALID_INPUT', 'No model surface was found at that point'));
         } else {
           active.phase = 'drawing';
           this.#publish(true);
@@ -610,7 +603,7 @@ export class MarkupAuthoringCapability {
       }
       if (active.session.preview.plane === null) active.session.establishPlaneFromPick(hit);
       const establishedPlane = active.session.preview.plane;
-      if (establishedPlane === null) throw new InvalidInputError('Drawing plane was not established');
+      if (establishedPlane === null) throw domainError('INVALID_INPUT', 'Drawing plane was not established');
       const local = worldPointToDrawingPlane(establishedPlane, hit.point);
       if (stage === 'down') {
         active.pointerPoints = [local];
@@ -700,7 +693,7 @@ export class MarkupAuthoringCapability {
 
   #assertUsable(): void {
     this.#assertActive();
-    if (this.#disposed) throw new DisposedError();
+    if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
   }
 }
 
@@ -728,6 +721,6 @@ function revisionCloudArcLength(points: readonly Vec2[]): number {
 
 function requireLeg(annotation: Annotation, legId: string): AnnotationLeg {
   const leg = annotation.anchors.find(({ id }) => id === legId);
-  if (leg === undefined) throw new NotFoundError('anchor leg', legId);
+  if (leg === undefined) throw domainError('NOT_FOUND', `Unknown anchor leg: ${legId}`, { id: legId });
   return leg;
 }

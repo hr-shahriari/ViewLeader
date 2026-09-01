@@ -1,6 +1,6 @@
 import { DEFAULT_LANDING, type LandingRender, type LandingSide } from './definitions.js';
 import { finitePoint, segmentThroughInterior } from './lint.js';
-import { InvalidInputError } from './errors.js';
+import { domainError } from './errors.js';
 import type { AnnotationPlacement, Vec2 } from './types.js';
 
 export interface ScreenBounds {
@@ -74,7 +74,7 @@ export function routeLegs(
   const obstacles = options.obstacles ?? [];
   const ids = new Set<string>();
   return legs.map((leg) => {
-    if (ids.has(leg.id)) throw new InvalidInputError(`Duplicate route leg id "${leg.id}"`, { id: leg.id });
+    if (ids.has(leg.id)) throw domainError('INVALID_INPUT', `Duplicate route leg id "${leg.id}"`, { id: leg.id });
     ids.add(leg.id);
     validatePoint(leg.anchor, 'leg anchor');
     validateLegRoute(leg.route);
@@ -403,7 +403,7 @@ export function resetPlacement(): AnnotationPlacement {
 
 function setRouteMode(mode: Exclude<LegRoute['mode'], 'manual'>): LegRoute {
   if (mode !== 'straight' && mode !== 'dogleg' && mode !== 'orthogonal') {
-    throw new InvalidInputError(`Unsupported route mode "${String(mode)}"`, { mode });
+    throw domainError('INVALID_INPUT', `Unsupported route mode "${String(mode)}"`, { mode });
   }
   return { mode };
 }
@@ -451,10 +451,10 @@ export function removeRouteVertex(route: LegRoute, index: number): LegRoute {
 }
 
 function validateLegRoute(route: LegRoute): void {
-  if (route === null || typeof route !== 'object') throw new InvalidInputError('Route must be an object');
+  if (route === null || typeof route !== 'object') throw domainError('INVALID_INPUT', 'Route must be an object');
   if (route.mode === 'straight' || route.mode === 'dogleg' || route.mode === 'orthogonal') return;
   if (route.mode !== 'manual' || !Array.isArray(route.vertices) || route.vertices.length > 64) {
-    throw new InvalidInputError('Manual route must contain at most 64 vertices');
+    throw domainError('INVALID_INPUT', 'Manual route must contain at most 64 vertices');
   }
   for (const vertex of route.vertices) validatePoint(vertex, 'manual route vertex');
 }
@@ -536,26 +536,26 @@ function rectangleAttachment(bounds: ScreenBounds, target: Vec2): Vec2 {
 function manualVertices(route: LegRoute): readonly Vec2[] {
   validateLegRoute(route);
   if (route.mode !== 'manual') {
-    throw new InvalidInputError('Route vertex edits require manual routing', { mode: route.mode });
+    throw domainError('INVALID_INPUT', 'Route vertex edits require manual routing', { mode: route.mode });
   }
   return route.vertices;
 }
 
 function validateInsertionIndex(index: number, length: number): void {
   if (!Number.isInteger(index) || index < 0 || index > length) {
-    throw new InvalidInputError('Route vertex insertion index is out of range', { index, length });
+    throw domainError('INVALID_INPUT', 'Route vertex insertion index is out of range', { index, length });
   }
 }
 
 function validateExistingIndex(index: number, length: number): void {
   if (!Number.isInteger(index) || index < 0 || index >= length) {
-    throw new InvalidInputError('Route vertex index is out of range', { index, length });
+    throw domainError('INVALID_INPUT', 'Route vertex index is out of range', { index, length });
   }
 }
 
 function validateBounds(bounds: ScreenBounds, label: string): void {
   if (!finiteBounds(bounds) || bounds.width <= 0 || bounds.height <= 0) {
-    throw new InvalidInputError(`${label} must be finite and positive`);
+    throw domainError('INVALID_INPUT', `${label} must be finite and positive`);
   }
 }
 
@@ -564,7 +564,7 @@ function finiteBounds(bounds: ScreenBounds): boolean {
 }
 
 function validatePoint(point: Vec2, label: string): void {
-  if (!finitePoint(point)) throw new InvalidInputError(`${label} must be finite`);
+  if (!finitePoint(point)) throw domainError('INVALID_INPUT', `${label} must be finite`);
 }
 
 function average(points: readonly Vec2[]): Vec2 {

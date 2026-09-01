@@ -39,12 +39,7 @@ import {
   type TemplateApplicable,
   type TypedDefinition,
 } from './definitions.js';
-import {
-  DisposedError,
-  InvalidConfigurationError,
-  InvalidDocumentError,
-  NotFoundError,
-} from './errors.js';
+import { domainError, InvalidDocumentError } from './errors.js';
 import { ExtensionRuntime, type PluginDescriptor } from './extensions.js';
 import { keynotesOf, type KeynoteEntry } from './keynotes.js';
 import { MarkupAuthoringCapability } from './markup-authoring-capability.js';
@@ -304,10 +299,10 @@ export class ViewLeader {
 
   public constructor(options: ViewLeaderOptions) {
     if (options === null || typeof options !== 'object') {
-      throw new InvalidConfigurationError('ViewLeader options are required');
+      throw domainError('INVALID_CONFIGURATION', 'ViewLeader options are required');
     }
     if (!isElement(options.boundary)) {
-      throw new InvalidConfigurationError('boundary must be a DOM Element');
+      throw domainError('INVALID_CONFIGURATION', 'boundary must be a DOM Element');
     }
     this.#boundary = options.boundary;
     this.#document = new DocumentEngine({
@@ -732,7 +727,9 @@ export class ViewLeader {
     replace: (leg: AnnotationLeg) => AnnotationLeg,
   ): readonly AnnotationLeg[] {
     const current = this.#requireAnnotation(id);
-    if (!current.anchors.some((leg) => leg.id === legId)) throw new NotFoundError('annotation leg', legId);
+    if (!current.anchors.some((leg) => leg.id === legId)) {
+      throw domainError('NOT_FOUND', `Unknown annotation leg: ${legId}`, { id: legId });
+    }
     return current.anchors.map((leg) => leg.id === legId ? replace(leg) : leg);
   }
 
@@ -789,7 +786,7 @@ export class ViewLeader {
         this.#editing.beginRegionHandleDrag(id, index, pointer);
       },
       beginInkPointDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        if (this.#markup.getInk(id) === undefined) throw new NotFoundError('ink', id);
+        if (this.#markup.getInk(id) === undefined) throw domainError('NOT_FOUND', `Unknown ink: ${id}`, { id });
         this.#editing.beginInkPointDrag(id, index, pointer);
       },
       pointerMove: (pointer: NormalizedPointerInput) => { this.#editing.pointerMove(pointer); },
@@ -960,7 +957,7 @@ export class ViewLeader {
 
   #requireAnnotation(id: string): Annotation {
     const annotation = this.#document.get(id);
-    if (annotation === undefined) throw new NotFoundError('annotation', id);
+    if (annotation === undefined) throw domainError('NOT_FOUND', `Unknown annotation: ${id}`, { id });
     return annotation;
   }
 
@@ -971,12 +968,12 @@ export class ViewLeader {
       ...definitionsFromCollections(this.#document.document.definitions),
     ];
     if (!definitions.some((definition) => definition.kind === 'style' && definition.id === styleId)) {
-      throw new NotFoundError('style definition', styleId);
+      throw domainError('NOT_FOUND', `Unknown style definition: ${styleId}`, { id: styleId });
     }
   }
 
   readonly #assertActive = (): void => {
-    if (this.#disposed) throw new DisposedError();
+    if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
   };
 }
 

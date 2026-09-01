@@ -3,7 +3,7 @@
 // Nothing is written to the document until the gesture finishes, so one placement is one undo step
 // and an abandoned one leaves no trace. Every method can be called directly as well as driven by
 // pointer events, which is what lets a host build keyboard or scripted placement on the same code.
-import { AdapterError, InvalidInputError, ViewLeaderError } from './errors.js';
+import { AdapterError, domainError, ViewLeaderError } from './errors.js';
 import type { DocumentEngine } from './document.js';
 import type {
   AccuratePickingAdapter,
@@ -231,7 +231,7 @@ export class AuthoringController {
       return;
     }
     if (this.#picking === undefined) {
-      this.#fail(active, new InvalidInputError('The host adapter does not provide accurate picking'));
+      this.#fail(active, domainError('INVALID_INPUT', 'The host adapter does not provide accurate picking'));
       return;
     }
     active.phase = 'pending-pick';
@@ -245,7 +245,7 @@ export class AuthoringController {
       if (this.#active !== active || active.pick !== controller || controller.signal.aborted) return;
       active.pick = undefined;
       if (anchor === null) {
-        this.#fail(active, new InvalidInputError('No model anchor was found at that point'));
+        this.#fail(active, domainError('INVALID_INPUT', 'No model anchor was found at that point'));
         return;
       }
       if (active.multiPoint) {
@@ -276,10 +276,10 @@ export class AuthoringController {
   public addVertex(point: Vec2): AuthoringSnapshot {
     const active = this.#active;
     if (active === undefined || !active.multiPoint) {
-      throw new InvalidInputError('No multi-point authoring session is active');
+      throw domainError('INVALID_INPUT', 'No multi-point authoring session is active');
     }
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-      throw new InvalidInputError('Manual route vertex must be finite');
+      throw domainError('INVALID_INPUT', 'Manual route vertex must be finite');
     }
     this.#appendVertex(active, { x: point.x, y: point.y });
     return this.getSnapshot();
@@ -291,7 +291,7 @@ export class AuthoringController {
     if (active === undefined || !active.multiPoint) return null;
     const landing = active.vertices.at(-1);
     if (active.anchor === undefined || active.phase !== 'ready' || landing === undefined) {
-      const error = new InvalidInputError('A manual leader needs an arrow point and at least two route points');
+      const error = domainError('INVALID_INPUT', 'A manual leader needs an arrow point and at least two route points');
       const outcome = Object.freeze({ status: 'failed' as const, error });
       this.#finish(active, outcome, error.message);
       return outcome;
@@ -340,7 +340,7 @@ export class AuthoringController {
     } catch (cause) {
       const error = cause instanceof ViewLeaderError
         ? cause
-        : new InvalidInputError('Annotation completion failed', { cause });
+        : domainError('INVALID_INPUT', 'Annotation completion failed', { cause });
       const outcome = Object.freeze({ status: 'failed' as const, error });
       this.#finish(active, outcome, error.message);
       return outcome;

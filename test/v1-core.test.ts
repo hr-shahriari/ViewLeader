@@ -1,7 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  DisposedError,
   InvalidDocumentError,
   ViewLeader,
   type Anchor,
@@ -117,10 +116,10 @@ describe('fresh v1 core vertical slice', () => {
     leader.dispose();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
-    expect(() => leader.update()).toThrow(DisposedError);
-    expect(() => leader.annotations.getSnapshot()).toThrow(DisposedError);
-    expect(() => getSnapshot()).toThrow(DisposedError);
-    expect(() => list()).toThrow(DisposedError);
+    expect(() => leader.update()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => leader.annotations.getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => list()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
   });
 
   it('serializes deterministically and rejects replacement without observable mutation', () => {
@@ -429,7 +428,7 @@ describe('fresh v1 core vertical slice', () => {
     expect(disconnect).toHaveBeenCalledOnce();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
-    expect(() => leader.update()).toThrow(DisposedError);
+    expect(() => leader.update()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
     expect(() => leader.dispose()).not.toThrow();
   });
 

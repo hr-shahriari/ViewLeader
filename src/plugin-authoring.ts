@@ -1,5 +1,5 @@
 import type { DocumentEngine } from './document.js';
-import { domainError, DisposedError } from './errors.js';
+import { domainError } from './errors.js';
 import {
   type DeclarativePrimitive,
   type ExtensionRuntime,
@@ -275,6 +275,6 @@ export class PluginAuthoringController {
   }
 
   #assertActive(): void {
-    if (this.#disposed) throw new DisposedError();
+    if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
   }
 }

@@ -7,12 +7,7 @@
 // Every number here is a drafting unit rather than a pixel: pen tiers, paper millimetres, standard
 // lettering heights. That way each one can be checked against a published standard instead of being
 // a value somebody once thought looked right.
-import {
-  domainError,
-  InvalidInputError,
-  InvariantViolationError,
-  NotFoundError,
-} from './errors.js';
+import { domainError } from './errors.js';
 import { CAD_PAPER, PEN, mm, type Theme } from './theme.js';
 import type {
   Annotation,
@@ -722,7 +717,7 @@ export class DefinitionsCapability {
     const owned = structuredClone(definition);
     return this.#port.transact(`Create ${definition.kind} ${definition.id}`, (current) => {
       if (current.some(({ id }) => id === definition.id)) {
-        throw new InvalidInputError(`Definition "${definition.id}" already exists`, {
+        throw domainError('INVALID_INPUT', `Definition "${definition.id}" already exists`, {
           id: definition.id,
           kind: definition.kind,
         });
@@ -739,7 +734,7 @@ export class DefinitionsCapability {
     validateDefinition(replacement);
     this.#assertCustomId(id);
     if (replacement.id !== id) {
-      throw new InvalidInputError('A definition update cannot change its id', {
+      throw domainError('INVALID_INPUT', 'A definition update cannot change its id', {
         id,
         replacementId: replacement.id,
       });
@@ -748,9 +743,9 @@ export class DefinitionsCapability {
     return this.#port.transact(`Update ${replacement.kind} ${id}`, (current) => {
       const index = current.findIndex((candidate) => candidate.id === id);
       const before = current[index];
-      if (before === undefined) throw new NotFoundError('definition', id);
+      if (before === undefined) throw domainError('NOT_FOUND', `Unknown definition: ${id}`, { id });
       if (before.kind !== replacement.kind) {
-        throw new InvalidInputError('A definition update cannot change its kind', {
+        throw domainError('INVALID_INPUT', 'A definition update cannot change its kind', {
           id,
           currentKind: before.kind,
           replacementKind: replacement.kind,
@@ -774,7 +769,7 @@ export class DefinitionsCapability {
     }
     return this.#port.transact(`Remove definition ${id}`, (current) => {
       const removed = current.find((candidate) => candidate.id === id);
-      if (removed === undefined) throw new NotFoundError('definition', id);
+      if (removed === undefined) throw domainError('NOT_FOUND', `Unknown definition: ${id}`, { id });
       return {
         definitions: current.filter((candidate) => candidate.id !== id),
         value: structuredClone(removed),
@@ -787,9 +782,9 @@ export class DefinitionsCapability {
     templateId: string,
   ): Target {
     const template = this.get(templateId);
-    if (template === undefined) throw new NotFoundError('template', templateId);
+    if (template === undefined) throw domainError('NOT_FOUND', `Unknown template: ${templateId}`, { id: templateId });
     if (template.kind !== 'template') {
-      throw new InvalidInputError(`Definition "${templateId}" is not a template`, {
+      throw domainError('INVALID_INPUT', `Definition "${templateId}" is not a template`, {
         id: templateId,
         kind: template.kind,
       });
@@ -812,7 +807,7 @@ export function validateDefinition(
   unrecognized?: string[],
 ): void {
   if (definition === null || typeof definition !== 'object') {
-    throw new InvalidInputError('Definition must be an object');
+    throw domainError('INVALID_INPUT', 'Definition must be an object');
   }
   validateId(definition.id);
   validateBoundedString(definition.name, 'definition name', 256);
@@ -828,7 +823,7 @@ export function validateDefinition(
       assertExactKeys(definition, ['kind', 'id', 'name', 'defaults'], 'template definition', unrecognized);
       assertExactKeys(definition.defaults, ['content', 'styleId', 'placement', 'routing'], 'template defaults', unrecognized);
       assertJson(definition.defaults, 'template defaults', TEMPLATE_JSON_BOUNDS, (_failure, message, details) =>
-        new InvalidInputError(message, details));
+        domainError('INVALID_INPUT', message, details));
       return;
     case 'terminator':
       assertExactKeys(definition, [
@@ -836,11 +831,11 @@ export function validateDefinition(
       ], 'terminator definition', unrecognized);
       validateDeclarativeGeometry(definition, unrecognized);
       if (definition.fill !== 'filled' && definition.fill !== 'outline') {
-        throw new InvalidInputError('Terminator fill must be filled or outline');
+        throw domainError('INVALID_INPUT', 'Terminator fill must be filled or outline');
       }
       if (definition.sizing !== undefined
         && definition.sizing !== 'text-height' && definition.sizing !== 'line-width') {
-        throw new InvalidInputError('Terminator sizing must be text-height or line-width');
+        throw domainError('INVALID_INPUT', 'Terminator sizing must be text-height or line-width');
       }
       return;
     case 'enclosure':
@@ -850,11 +845,11 @@ export function validateDefinition(
       validateDeclarativeGeometry(definition, unrecognized);
       if (definition.aspect !== undefined
         && definition.aspect !== 'free' && definition.aspect !== 'square') {
-        throw new InvalidInputError('Enclosure aspect must be free or square');
+        throw domainError('INVALID_INPUT', 'Enclosure aspect must be free or square');
       }
       if (definition.corners !== undefined
         && definition.corners !== 'sharp' && definition.corners !== 'radiused') {
-        throw new InvalidInputError('Enclosure corners must be sharp or radiused');
+        throw domainError('INVALID_INPUT', 'Enclosure corners must be sharp or radiused');
       }
       return;
     default:
@@ -876,13 +871,13 @@ function validateDeclarativeGeometry(
   validateContainedPoint(definition.attachment.point, definition.bounds, 'attachment point');
   validatePoint(definition.attachment.direction, 'attachment direction');
   if (Math.hypot(definition.attachment.direction.x, definition.attachment.direction.y) < 1e-9) {
-    throw new InvalidInputError('Attachment direction must not be zero');
+    throw domainError('INVALID_INPUT', 'Attachment direction must not be zero');
   }
   if (!Array.isArray(definition.commands) || definition.commands.length < 2 || definition.commands.length > 256) {
-    throw new InvalidInputError('Declarative geometry must contain 2–256 path commands');
+    throw domainError('INVALID_INPUT', 'Declarative geometry must contain 2–256 path commands');
   }
   if (definition.commands[0]?.command !== 'move') {
-    throw new InvalidInputError('Declarative geometry must begin with a move command');
+    throw domainError('INVALID_INPUT', 'Declarative geometry must begin with a move command');
   }
   for (const command of definition.commands) {
     switch (command.command) {
@@ -907,7 +902,7 @@ function validateDeclarativeGeometry(
         assertExactKeys(command, ['command'], 'close command', unrecognized);
         break;
       default:
-        throw new InvalidInputError('Unsupported declarative path command');
+        throw domainError('INVALID_INPUT', 'Unsupported declarative path command');
     }
   }
 }
@@ -1074,7 +1069,7 @@ function validateStyle(style: StyleDefinition): void {
   if (style.labelTerminatorId !== undefined) validateId(style.labelTerminatorId, 'Style labelTerminatorId');
   for (const [field, value] of [['lineWidth', style.lineWidth], ['fontSize', style.fontSize]] as const) {
     if (!Number.isFinite(value) || value <= 0 || value > 1_000) {
-      throw new InvalidInputError(`${field} must be finite and positive`, { field, value });
+      throw domainError('INVALID_INPUT', `${field} must be finite and positive`, { field, value });
     }
   }
   if (style.landing !== undefined) validateLanding(style.landing);
@@ -1090,10 +1085,12 @@ function validateLanding(landing: StyleLanding): void {
   validateNonNegative(landing.length, 'landing length');
   validateNonNegative(landing.gap, 'landing gap');
   if (landing.side !== undefined && !LANDING_SIDES.includes(landing.side)) {
-    throw new InvalidInputError('Landing side must be auto, left, right, top, or bottom', { side: landing.side });
+    throw domainError('INVALID_INPUT', 'Landing side must be auto, left, right, top, or bottom', {
+      side: landing.side,
+    });
   }
   if (landing.render !== undefined && !LANDING_RENDERS.includes(landing.render)) {
-    throw new InvalidInputError('Landing render must be shoulder, underline, or none', {
+    throw domainError('INVALID_INPUT', 'Landing render must be shoulder, underline, or none', {
       render: landing.render,
     });
   }
@@ -1115,22 +1112,22 @@ function validateContentBox(content: StyleContentBox): void {
   if (content.backgroundOpacity !== undefined
     && (!Number.isFinite(content.backgroundOpacity)
       || content.backgroundOpacity < 0 || content.backgroundOpacity > 1)) {
-    throw new InvalidInputError('Background opacity must be between 0 and 1', {
+    throw domainError('INVALID_INPUT', 'Background opacity must be between 0 and 1', {
       backgroundOpacity: content.backgroundOpacity,
     });
   }
   if (content.align !== undefined && !TEXT_ALIGNS.includes(content.align)) {
-    throw new InvalidInputError('Content align must be start, middle, or end', { align: content.align });
+    throw domainError('INVALID_INPUT', 'Content align must be start, middle, or end', { align: content.align });
   }
   if (content.weight !== undefined && !TEXT_WEIGHTS.includes(content.weight)) {
-    throw new InvalidInputError('Content weight must be normal or bold', { weight: content.weight });
+    throw domainError('INVALID_INPUT', 'Content weight must be normal or bold', { weight: content.weight });
   }
 }
 
 function validateNonNegative(value: number | undefined, label: string): void {
   if (value === undefined) return;
   if (!Number.isFinite(value) || value < 0 || value > 1_000) {
-    throw new InvalidInputError(`${label} must be finite, non-negative, and bounded`, { value });
+    throw domainError('INVALID_INPUT', `${label} must be finite, non-negative, and bounded`, { value });
   }
 }
 
@@ -1321,7 +1318,7 @@ function validateBounds(bounds: DefinitionBounds): void {
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
     || bounds.width <= 0 || bounds.height <= 0
     || bounds.width > 100_000 || bounds.height > 100_000) {
-    throw new InvalidInputError('Definition bounds must be finite, positive, and bounded');
+    throw domainError('INVALID_INPUT', 'Definition bounds must be finite, positive, and bounded');
   }
 }
 
@@ -1329,7 +1326,7 @@ function validatePoint(point: Vec2, label: string): void {
   if (point === null || typeof point !== 'object'
     || !Number.isFinite(point.x) || !Number.isFinite(point.y)
     || Math.abs(point.x) > 1_000_000 || Math.abs(point.y) > 1_000_000) {
-    throw new InvalidInputError(`${label} must be a finite bounded point`);
+    throw domainError('INVALID_INPUT', `${label} must be a finite bounded point`);
   }
 }
 
@@ -1350,13 +1347,13 @@ function validateContainedPoint(point: Vec2, bounds: DefinitionBounds, label: st
 function validateId(id: string, label = 'Definition id'): void {
   if (typeof id !== 'string' || id.length === 0 || id.length > 128
     || !/^[a-zA-Z][a-zA-Z0-9._:-]*$/u.test(id)) {
-    throw new InvalidInputError(`${label} is invalid`, { id });
+    throw domainError('INVALID_INPUT', `${label} is invalid`, { id });
   }
 }
 
 function validateBoundedString(value: string, label: string, maximum: number): void {
   if (typeof value !== 'string' || value.length === 0 || value.length > maximum) {
-    throw new InvalidInputError(`${label} must contain 1–${maximum} characters`);
+    throw domainError('INVALID_INPUT', `${label} must contain 1–${maximum} characters`);
   }
 }
 

@@ -37,35 +37,14 @@ export class ViewLeaderError extends Error {
   }
 }
 
-export class InvalidConfigurationError extends ViewLeaderError {
-  public constructor(message: string, details?: Readonly<Record<string, unknown>>) {
-    super('INVALID_CONFIGURATION', message, details);
-  }
-}
-
-export class InvalidInputError extends ViewLeaderError {
-  public constructor(message: string, details?: Readonly<Record<string, unknown>>) {
-    super('INVALID_INPUT', message, details);
-  }
-}
-
 /**
- * Builds an error for the narrower failures — a bad style, a route that cannot exist, an image that
- * will not load. These share one class because a host almost always handles them the same way; the
- * `code` is there for the cases where it does not.
+ * Builds a `ViewLeaderError` for everything that has no dedicated class. Hosts almost always handle
+ * these the same way (show the message), so one class serves them all; the `code` is there for the
+ * cases where one does not. Only the errors a host reasonably branches on by class remain classes:
+ * `InvalidDocumentError`, `DocumentTooLargeError`, `AdapterError`.
  */
 export function domainError(
-  code: Extract<
-    ViewLeaderErrorCode,
-    | 'INVALID_DEFINITION'
-    | 'IMMUTABLE_DEFINITION'
-    | 'DEFINITION_IN_USE'
-    | 'INVALID_ROUTE'
-    | 'INVALID_IMAGE'
-    | 'INVALID_PLUGIN'
-    | 'INVALID_GEOMETRY'
-    | 'INVARIANT_VIOLATION'
-  >,
+  code: ViewLeaderErrorCode,
   message: string,
   details: Readonly<Record<string, unknown>> = {},
 ): ViewLeaderError {
@@ -88,24 +67,6 @@ export class DocumentTooLargeError extends ViewLeaderError {
   }
 }
 
-export class DuplicateIdError extends ViewLeaderError {
-  public constructor(id: string) {
-    super('DUPLICATE_ID', `An annotation with id "${id}" already exists`, { id });
-  }
-}
-
-export class NotFoundError extends ViewLeaderError {
-  public constructor(resource: string, id: string) {
-    super('NOT_FOUND', `Unknown ${resource}: ${id}`, { resource, id });
-  }
-}
-
-export class InvariantViolationError extends ViewLeaderError {
-  public constructor(message: string, details?: Readonly<Record<string, unknown>>) {
-    super('INVARIANT_VIOLATION', message, details);
-  }
-}
-
 export class AdapterError extends ViewLeaderError {
   public constructor(
     operation: string,
@@ -118,11 +79,5 @@ export class AdapterError extends ViewLeaderError {
       { operation, ...details },
       cause === undefined ? undefined : { cause },
     );
-  }
-}
-
-export class DisposedError extends ViewLeaderError {
-  public constructor() {
-    super('DISPOSED', 'This ViewLeader instance has been disposed');
   }
 }

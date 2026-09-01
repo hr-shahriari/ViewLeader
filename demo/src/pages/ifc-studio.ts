@@ -209,7 +209,7 @@ try {
 
   // Ids come off a monotonic counter, never off `annotations.length` and never off `Date.now()`.
   // Length rewinds when you delete something, so the next create collides and `annotations.create`
-  // throws `DuplicateIdError`. A clock is worse: two markups committed in the same millisecond
+  // throws `DUPLICATE_ID`. A clock is worse: two markups committed in the same millisecond
   // collide, and the document stops being reproducible.
   let nextId = 0;
   const freshId = (prefix: string): string => `${prefix}-${(nextId += 1)}`;

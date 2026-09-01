@@ -4,7 +4,7 @@
 // A saved view stores more than a camera. It also records which elements were hidden, what was
 // recoloured, and how individual annotations were overridden, so returning to a view genuinely
 // restores what you were looking at rather than just where you stood.
-import { InvalidConfigurationError, InvalidDocumentError } from './errors.js';
+import { domainError, InvalidDocumentError } from './errors.js';
 import type { Diagnostic } from './host.js';
 import { DocumentEngine, applyResidue, residueOf } from './document.js';
 import type { JsonObject, ViewLeaderDocument } from './types.js';
@@ -159,7 +159,7 @@ const unavailableViewerState: ViewerStateAdapter<never> = {
 };
 
 function unavailable(): never {
-  throw new InvalidConfigurationError(
+  throw domainError('INVALID_CONFIGURATION', 
     'The host adapter bundle does not provide transactional viewer state',
   );
 }

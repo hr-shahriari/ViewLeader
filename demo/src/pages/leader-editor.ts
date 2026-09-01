@@ -143,7 +143,7 @@ try {
   //
   // Ids come off a monotonic counter, never off `annotations.length` and never off `Date.now()`.
   // Length rewinds when you delete something, so the next create collides and `annotations.create`
-  // throws `DuplicateIdError` — the tool would report "failed" for a document the user broke three
+  // throws `DUPLICATE_ID` — the tool would report "failed" for a document the user broke three
   // actions ago. A clock is worse still: two markups committed in the same millisecond collide, and
   // the document stops being reproducible.
   let nextId = 0;

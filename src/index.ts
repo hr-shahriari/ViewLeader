@@ -95,14 +95,8 @@ export type {
 
 export {
   AdapterError,
-  DisposedError,
   DocumentTooLargeError,
-  DuplicateIdError,
-  InvalidConfigurationError,
   InvalidDocumentError,
-  InvalidInputError,
-  InvariantViolationError,
-  NotFoundError,
   ViewLeaderError,
   domainError,
   type ViewLeaderErrorCode,

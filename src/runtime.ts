@@ -31,7 +31,7 @@ import {
 } from './definitions.js';
 import { type DocumentCommit, DocumentEngine } from './document.js';
 import { deepFreeze } from './internal/freeze.js';
-import { AdapterError, InvalidInputError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import {
   type DeclarativePrimitive,
   type ExtensionRuntime,
@@ -980,7 +980,7 @@ export class ViewLeaderRuntime {
    */
   public setAnnotationScale(scale: number): void {
     if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0) {
-      throw new InvalidInputError('Annotation scale must be a finite positive number', { scale });
+      throw domainError('INVALID_INPUT', 'Annotation scale must be a finite positive number', { scale });
     }
     if (this.#disposed || scale === this.#annotationScale) return;
     this.#annotationScale = scale;

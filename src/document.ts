@@ -8,13 +8,7 @@
 // loaded, so a typo fails immediately but a colleague's drawing still opens. And fields written by
 // a newer version are kept word-for-word rather than dropped, so an older build cannot quietly
 // delete work it does not understand when it saves.
-import {
-  DocumentTooLargeError,
-  DuplicateIdError,
-  InvalidDocumentError,
-  InvalidInputError,
-  NotFoundError,
-} from './errors.js';
+import { DocumentTooLargeError, domainError, InvalidDocumentError } from './errors.js';
 import type { Diagnostic } from './host.js';
 import type {
   Anchor,
@@ -184,7 +178,7 @@ export class DocumentEngine {
   public constructor(options: DocumentEngineOptions = {}) {
     const capacity = options.historyCapacity ?? 100;
     if (!Number.isSafeInteger(capacity) || capacity <= 0) {
-      throw new InvalidInputError('historyCapacity must be a positive integer', {
+      throw domainError('INVALID_INPUT', 'historyCapacity must be a positive integer', {
         historyCapacity: capacity,
       });
     }
@@ -231,7 +225,9 @@ export class DocumentEngine {
     const annotation = deepFreeze(normalizeAnnotationDraft(draft, this.#nextId()));
     return this.edit(label, (document) => {
       if (document.annotations.some(({ id }) => id === annotation.id)) {
-        throw new DuplicateIdError(annotation.id);
+        throw domainError('DUPLICATE_ID', `An annotation with id "${annotation.id}" already exists`, {
+          id: annotation.id,
+        });
       }
       return {
         document: { ...document, annotations: [...document.annotations, annotation] },
@@ -245,7 +241,7 @@ export class DocumentEngine {
     return this.edit(label, (document) => {
       const index = document.annotations.findIndex((annotation) => annotation.id === id);
       const current = document.annotations[index];
-      if (current === undefined) throw new NotFoundError('annotation', id);
+      if (current === undefined) throw domainError('NOT_FOUND', `Unknown annotation: ${id}`, { id });
       const updated = deepFreeze(applyAnnotationPatch(current, patch));
       if (canonicalStringify(current) === canonicalStringify(updated)) {
         return { document, result: current };
@@ -260,7 +256,7 @@ export class DocumentEngine {
     assertId(id, 'annotation id');
     return this.edit(label, (document) => {
       const current = document.annotations.find((annotation) => annotation.id === id);
-      if (current === undefined) throw new NotFoundError('annotation', id);
+      if (current === undefined) throw domainError('NOT_FOUND', `Unknown annotation: ${id}`, { id });
       return {
         document: {
           ...document,
@@ -435,7 +431,7 @@ export class DocumentEngine {
 
   #assertOutsideTransaction(operation: string): void {
     if (this.#transactionDepth !== 0) {
-      throw new InvalidInputError(`Cannot ${operation} during a document transaction`);
+      throw domainError('INVALID_INPUT', `Cannot ${operation} during a document transaction`);
     }
   }
 
@@ -523,7 +519,7 @@ function normalizeDocument(value: unknown, diagnose?: DocumentDiagnose): ViewLea
   const ids = new Set<string>();
   for (const id of [...normalizedAnnotations.map(({ id: value }) => value),
     ...quarantined.map(annotationKey)]) {
-    if (ids.has(id)) throw new DuplicateIdError(id);
+    if (ids.has(id)) throw domainError('DUPLICATE_ID', `An annotation with id "${id}" already exists`, { id });
     ids.add(id);
   }
   const envelopes = arrayValue(input.pluginEnvelopes, 'pluginEnvelopes');
@@ -623,10 +619,10 @@ function normalizeAnnotationDraft(
   const usesSingle = draft.anchor !== undefined;
   const usesMultiple = draft.anchors !== undefined;
   if (usesSingle === usesMultiple) {
-    throw new InvalidInputError('Exactly one of anchor or anchors is required');
+    throw domainError('INVALID_INPUT', 'Exactly one of anchor or anchors is required');
   }
   if (usesMultiple && draft.routing !== undefined) {
-    throw new InvalidInputError('routing is only valid with the single anchor convenience form');
+    throw domainError('INVALID_INPUT', 'routing is only valid with the single anchor convenience form');
   }
   const anchors = usesSingle
     ? [{
@@ -660,13 +656,13 @@ function applyAnnotationPatch(
   patch: AnnotationPatch,
 ): Annotation {
   if (patch.anchor !== undefined && patch.anchors !== undefined) {
-    throw new InvalidInputError('anchor and anchors cannot be updated together');
+    throw domainError('INVALID_INPUT', 'anchor and anchors cannot be updated together');
   }
   let anchors = annotation.anchors;
   if (patch.anchors !== undefined) anchors = patch.anchors;
   if (patch.anchor !== undefined || patch.routing !== undefined) {
     const first = annotation.anchors[0];
-    if (first === undefined) throw new InvalidInputError('Annotation has no anchor leg');
+    if (first === undefined) throw domainError('INVALID_INPUT', 'Annotation has no anchor leg');
     anchors = [
       {
         id: first.id,
@@ -714,7 +710,9 @@ function normalizeAnnotation(value: unknown): Annotation {
   }
   const normalizedLegs = rawAnchors.map((leg) => normalizeLeg(leg));
   if (new Set(normalizedLegs.map(({ id: legId }) => legId)).size !== normalizedLegs.length) {
-    throw new DuplicateIdError(`${id}/anchor-leg`);
+    throw domainError('DUPLICATE_ID', `An annotation with id "${id}/anchor-leg" already exists`, {
+      id: `${id}/anchor-leg`,
+    });
   }
   const annotation: Mutable<Annotation> = {
     id,
@@ -1270,7 +1268,7 @@ function assertId(value: string, label: string): void {
 
 function assertLabel(label: string): void {
   if (typeof label !== 'string' || label.trim().length === 0 || label.length > 256) {
-    throw new InvalidInputError('Transaction labels must contain 1 to 256 characters');
+    throw domainError('INVALID_INPUT', 'Transaction labels must contain 1 to 256 characters');
   }
 }
 

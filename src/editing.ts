@@ -7,7 +7,7 @@
 // While a drag is running nothing is written. The document is only touched on release, so one drag
 // is one undo step, and letting go outside the window or pressing escape leaves no trace.
 import type { DocumentEngine } from './document.js';
-import { AdapterError, InvalidInputError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import type {
   AccuratePickingAdapter,
   InteractionLease,
@@ -297,7 +297,7 @@ export class EditingController {
    */
   public hitTestScreen(at: Vec2): ScreenHit | undefined {
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) {
-      throw new InvalidInputError('Screen hit-test coordinates must be finite');
+      throw domainError('INVALID_INPUT', 'Screen hit-test coordinates must be finite');
     }
     return this.#runtime.hitTest({ x: at.x, y: at.y }, LEADER_HIT_TOLERANCE_PX);
   }
@@ -697,7 +697,7 @@ export class EditingController {
       // step, and means it cannot inherit a preview shape that was already found to be invalid.
       this.#commit(active, () => {
         const anchor = this.#regionFor(active, screenDelta);
-        if (anchor === undefined) throw new InvalidInputError('The region drag has no valid result');
+        if (anchor === undefined) throw domainError('INVALID_INPUT', 'The region drag has no valid result');
         this.#markup().updateRegion(active.id, active.legId!, () => anchor, 'Edit region');
       });
       return;
@@ -705,7 +705,7 @@ export class EditingController {
     if (active.baseInk !== undefined) {
       this.#commit(active, () => {
         const ink = this.#inkFor(active, screenDelta);
-        if (ink === undefined) throw new InvalidInputError('The ink drag has no valid result');
+        if (ink === undefined) throw domainError('INVALID_INPUT', 'The ink drag has no valid result');
         this.#markup().updateInk(active.id, () => ink, 'Edit ink');
       });
       return;
@@ -742,7 +742,7 @@ export class EditingController {
     }
     const picking: AccuratePickingAdapter | undefined = this.#runtime.adapters.picking;
     if (picking === undefined) {
-      this.#report(active, new InvalidInputError('The host adapter does not provide accurate picking'));
+      this.#report(active, domainError('INVALID_INPUT', 'The host adapter does not provide accurate picking'));
       return;
     }
     const controller = new AbortController();
@@ -769,7 +769,7 @@ export class EditingController {
       this.#document.update(active.id, this.#retargetPatch(active, anchor), 'Retarget annotation');
       this.#finish();
     } catch (cause) {
-      this.#report(active, cause instanceof Error ? cause : new InvalidInputError('Retarget failed'));
+      this.#report(active, cause instanceof Error ? cause : domainError('INVALID_INPUT', 'Retarget failed'));
     }
   }
 
@@ -786,7 +786,7 @@ export class EditingController {
   async #retargetRegion(active: ActiveDrag, pointer: NormalizedPointerInput): Promise<void> {
     const picking: SurfacePickingAdapter | undefined = this.#runtime.adapters.surfacePicking;
     if (picking === undefined) {
-      this.#report(active, new InvalidInputError('The host adapter does not provide accurate surface picking'));
+      this.#report(active, domainError('INVALID_INPUT', 'The host adapter does not provide accurate surface picking'));
       return;
     }
     const controller = new AbortController();
@@ -822,7 +822,7 @@ export class EditingController {
    */
   #retargetPatch(active: ActiveDrag, anchor: Anchor): AnnotationPatch {
     const current = this.#document.get(active.id);
-    if (current === undefined) throw new InvalidInputError(`Annotation ${active.id} no longer exists`);
+    if (current === undefined) throw domainError('INVALID_INPUT', `Annotation ${active.id} no longer exists`);
     if (current.anchors.length <= 1) return { anchor };
     return {
       anchors: current.anchors.map((leg) => leg.id === active.legId ? { ...leg, anchor } : leg),
@@ -851,7 +851,7 @@ export class EditingController {
   /** All the leaders, with only the dragged one changed. */
   #reroutedLegs(active: ActiveDrag, position: Vec2): readonly AnnotationLeg[] {
     const current = this.#document.get(active.id);
-    if (current === undefined) throw new InvalidInputError(`Annotation ${active.id} no longer exists`);
+    if (current === undefined) throw domainError('INVALID_INPUT', `Annotation ${active.id} no longer exists`);
     const routing = legRouteToCore(this.#routeFor(active, position));
     return current.anchors.map((leg) => leg.id === active.legId ? { ...leg, routing } : leg);
   }
@@ -868,7 +868,7 @@ export class EditingController {
       operation();
       this.#finish();
     } catch (cause) {
-      this.#report(active, cause instanceof Error ? cause : new InvalidInputError('The edit was refused'));
+      this.#report(active, cause instanceof Error ? cause : domainError('INVALID_INPUT', 'The edit was refused'));
     }
   }
 

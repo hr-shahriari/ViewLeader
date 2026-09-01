@@ -1,5 +1,5 @@
 import { DEFAULT_IMAGE_HEIGHT, DEFAULT_IMAGE_WIDTH } from './content.js';
-import { AdapterError, domainError, InvalidInputError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import type { HostImageAdapter, ResolvedHostImage } from './host.js';
 import type { HostImageContent } from './types.js';
 
@@ -178,7 +178,7 @@ export class ImageResolutionManager {
   }
 
   #assertActive(): void {
-    if (this.#disposed) throw new InvalidInputError('Image resolution manager is disposed');
+    if (this.#disposed) throw domainError('INVALID_INPUT', 'Image resolution manager is disposed');
   }
 }
 

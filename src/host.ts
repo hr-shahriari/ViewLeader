@@ -7,7 +7,7 @@
 //
 // Only `projection` is required. Everything else is optional, and leaving one out simply turns off
 // the feature that depends on it rather than breaking anything.
-import { AdapterError, InvalidConfigurationError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import type { ViewerStateAdapter } from './saved-views/neutral-types.js';
 import type {
   Anchor,
@@ -234,7 +234,7 @@ export class HostIntegration {
     diagnose: (diagnostic: Diagnostic) => void,
   ) {
     if (adapters === null || typeof adapters !== 'object' || adapters.projection === undefined) {
-      throw new InvalidConfigurationError('A coherent host adapter bundle with projection is required');
+      throw domainError('INVALID_CONFIGURATION', 'A coherent host adapter bundle with projection is required');
     }
     this.#adapters = adapters;
     this.#invalidate = invalidate;

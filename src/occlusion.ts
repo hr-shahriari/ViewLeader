@@ -1,4 +1,4 @@
-import { AdapterError, InvalidInputError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import type { OcclusionAdapter } from './host.js';
 import type { Vec2, Vec3 } from './types.js';
 
@@ -209,7 +209,7 @@ export class OcclusionManager {
   }
 
   #assertActive(): void {
-    if (this.#disposed) throw new InvalidInputError('Occlusion manager is disposed');
+    if (this.#disposed) throw domainError('INVALID_INPUT', 'Occlusion manager is disposed');
   }
 }
 
@@ -220,7 +220,7 @@ function applyOcclusionPolicy(
   occludedLegIds: readonly string[] = [],
 ): OcclusionPresentation {
   if (policy !== 'keep' && policy !== 'fade' && policy !== 'hide') {
-    throw new InvalidInputError(`Unsupported occlusion policy "${String(policy)}"`, { policy });
+    throw domainError('INVALID_INPUT', `Unsupported occlusion policy "${String(policy)}"`, { policy });
   }
   // Reported for every policy that still draws something. It matters most for `keep`, where the
   // annotation counts as visible overall and the individual buried legs are the only thing left to
@@ -235,14 +235,14 @@ function validateResults(
   results: readonly OcclusionResult[],
   candidates: readonly OcclusionCandidate[],
 ): ReadonlyMap<string, OcclusionResult> {
-  if (!Array.isArray(results)) throw new InvalidInputError('Occlusion adapter result must be an array');
+  if (!Array.isArray(results)) throw domainError('INVALID_INPUT', 'Occlusion adapter result must be an array');
   const allowed = new Set(candidates.map(({ id }) => id));
   const normalized = new Map<string, OcclusionResult>();
   for (const result of results) {
     if (!allowed.has(result.id) || normalized.has(result.id) || typeof result.occluded !== 'boolean'
       || (result.occludedLegIds !== undefined && (!Array.isArray(result.occludedLegIds)
         || result.occludedLegIds.some((legId: unknown) => typeof legId !== 'string')))) {
-      throw new InvalidInputError('Occlusion adapter returned an invalid result', { id: result.id });
+      throw domainError('INVALID_INPUT', 'Occlusion adapter returned an invalid result', { id: result.id });
     }
     // Copied rather than referenced. These answers outlive the request, and a host that held on
     // to its own array could otherwise change an answer the renderer is in the middle of using.
