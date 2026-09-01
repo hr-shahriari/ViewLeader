@@ -83,7 +83,6 @@
     "test:e2e:headed": "playwright test --headed",
     "typecheck": "tsc --noEmit && tsc -p demo --noEmit",
     "perf:browser": "npm run build && npm run build:demo && node scripts/run-browser-performance.mjs",
-    "perf:gate": "node scripts/performance-gate.mjs",
     "check": "npm run typecheck && npm run build && npm test && npm run build:demo && npm run test:e2e",
     "prepublishOnly": "npm run build"
   },

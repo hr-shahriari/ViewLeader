@@ -35,8 +35,11 @@ npx playwright test e2e/examples.spec.ts --project=chromium -g 'Markup'
 declaration graph to prove the bare entry never pulls in Three or IFC types. Run `npm run build`
 first, or that test fails on a clean checkout. This is why `check` orders build before test.
 
-Performance is a separate, opt-in gate — `npm run perf:browser` runs pinned-Chromium scenarios and
-writes JSON; `npm run perf:gate -- --results=<path>` validates it. Neither runs in `check`.
+Performance is a separate, opt-in gate — `npm run perf:browser` builds the library and the demo,
+runs the scenarios in `scripts/run-browser-performance.mjs` in Playwright's Chromium against the
+demo's `vite preview`, writes the JSON report (`--output=<path>`, default
+`artifacts/performance-results.json`) and exits non-zero when any scenario's median-run p95 is over
+its budget. `--scenario=<id>` runs one. It does not run in `check`.
 
 ## Architecture
 

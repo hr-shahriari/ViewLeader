@@ -1,10 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const packedDemoDist = process.env['VIEWLEADER_PACKED_DEMO_DIST'];
-const serverCommand = packedDemoDist === undefined
-  ? 'npm run build && npm run preview --workspace=viewleader-demo -- --strictPort'
-  : 'node scripts/serve-demo-dist.mjs';
-
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
@@ -17,7 +12,7 @@ export default defineConfig({
   },
   expect: { timeout: 10_000 },
   webServer: {
-    command: serverCommand,
+    command: 'npm run build && npm run preview --workspace=viewleader-demo -- --strictPort',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: false,
     timeout: 180_000,
