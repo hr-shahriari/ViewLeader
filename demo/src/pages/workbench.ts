@@ -101,11 +101,14 @@ try {
       content: { kind: 'plugin:viewleader.markdown', pluginId: 'viewleader.markdown', schemaVersion: 2, data: { source: '**Integrated** review' } },
     });
     // Ink markup on a drawing plane.
-    const ink = leader.authoring.markup.begin('ink');
-    ink.establishPlane({ origin: { x: 0, y: 0, z: 3.1 }, xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, normal: { x: 0, y: 0, z: 1 } });
-    ink.appendInkPoint({ x: -1.5, y: 1.5 });
-    ink.appendInkPoint({ x: 1.5, y: 2.5 });
-    leader.authoring.markup.commitInk(ink, { id: 'ink' });
+    void leader.authoring.markup.start({
+      kind: 'ink',
+      commit: { id: 'ink' },
+      plane: { origin: { x: 0, y: 0, z: 3.1 }, xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, normal: { x: 0, y: 0, z: 1 } },
+    });
+    leader.authoring.markup.appendInkPoint({ x: -1.5, y: 1.5 });
+    leader.authoring.markup.appendInkPoint({ x: 1.5, y: 2.5 });
+    leader.authoring.markup.complete();
     // Saved view + selection.
     await leader.views.save({ id: 'review', name: 'Review' });
     await leader.views.activate('review');

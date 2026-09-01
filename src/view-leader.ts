@@ -400,30 +400,28 @@ export class ViewLeader {
         },
       });
       this.#pluginAuthoring = pluginAuthoring;
-      markup = new MarkupAuthoringCapability(
-        this.#document,
-        () => this.#assertActive(),
-        (content) => this.#preparePluginContent(content),
-        (styleId) => this.#requireStyleId(styleId),
-        {
-          boundary: options.boundary,
-          ...(options.adapters.surfacePicking === undefined
-            ? {}
-            : { surfacePicking: options.adapters.surfacePicking }),
-          ...(options.adapters.interaction === undefined
-            ? {}
-            : { interaction: options.adapters.interaction }),
-          getStamp: () => ({
-            runtimeRevision: this.#runtime.runtimeRevision,
-            documentRevision: this.#document.documentRevision,
-          }),
-          publishTransientChange: (render) => this.#runtime.publishTransientChange(render),
-          preemptOthers: () => {
-            authoring?.cancel('preempted');
-            pluginAuthoring?.cancel('preempted');
-          },
+      markup = new MarkupAuthoringCapability({
+        document: this.#document,
+        assertActive: () => this.#assertActive(),
+        prepareContent: (content) => this.#preparePluginContent(content),
+        validateStyleId: (styleId) => this.#requireStyleId(styleId),
+        boundary: options.boundary,
+        ...(options.adapters.surfacePicking === undefined
+          ? {}
+          : { surfacePicking: options.adapters.surfacePicking }),
+        ...(options.adapters.interaction === undefined
+          ? {}
+          : { interaction: options.adapters.interaction }),
+        getStamp: () => ({
+          runtimeRevision: this.#runtime.runtimeRevision,
+          documentRevision: this.#document.documentRevision,
+        }),
+        publishTransientChange: (render) => this.#runtime.publishTransientChange(render),
+        preemptOthers: () => {
+          authoring?.cancel('preempted');
+          pluginAuthoring?.cancel('preempted');
         },
-      );
+      });
       this.#markup = markup;
       // Everything holding in-progress state has to react to a change before subscribers are told
       // about it, or a host would read a snapshot while half the engine still described the old

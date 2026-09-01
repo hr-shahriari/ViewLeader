@@ -39,7 +39,6 @@ import {
   parseMarkdownPluginContentLoose,
 } from 'viewleader/markdown';
 import {
-  addAnnotationAnchor,
   addRegionVertex,
   createInk,
   createRegionAnchor,
@@ -52,16 +51,11 @@ import {
   projectInk,
   projectRegion,
   regionAnchorFromCore,
-  removeAnnotationAnchor,
+  regionAnchorToCore,
   removeRegionVertex,
-  reorderAnnotationAnchor,
   replaceInkPoints,
   resizeRegion,
-  retargetAnnotationAnchor,
-  setAnnotationLegRoute,
   simplifyInk,
-  validateMultiLeader,
-  type MultiLeaderAnnotation,
 } from '../src/markup.js';
 import type { PluginEnvelope } from '../src/types.js';
 import { DocumentEngine } from '../src/document.js';
@@ -540,53 +534,6 @@ describe('v1 region, cloud, ink, and multi-leader geometry', () => {
       id: 'closed', plane, metadata: {}, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0 }],
     })).toThrowError(expect.objectContaining({ code: 'INVALID_INPUT' }));
   });
-
-  it('preserves ordered mixed anchors and independent routes, rejecting final removal', () => {
-    const region = createRegionAnchor(plane, {
-      kind: 'rectangle', center: { x: 0, y: 0 }, width: 2, height: 2,
-    });
-    let annotation: MultiLeaderAnnotation = {
-      kind: 'annotation',
-      id: 'multi',
-      anchors: [{
-        id: 'point',
-        anchor: { kind: 'world-point', point: { x: 0, y: 0, z: 0 } },
-        route: { mode: 'straight' },
-      }],
-      content: { kind: 'plain-note', text: 'Mixed anchors' },
-      placement: { kind: 'automatic' },
-      occlusion: 'keep',
-      metadata: {},
-    };
-    annotation = addAnnotationAnchor(annotation, {
-      id: 'element',
-      anchor: {
-        kind: 'element', modelId: 'model', elementId: 'wall', fallbackPoint: { x: 1, y: 2, z: 3 },
-      },
-      route: { mode: 'orthogonal' },
-    });
-    annotation = addAnnotationAnchor(annotation, {
-      id: 'region', anchor: region, route: { mode: 'manual', vertices: [{ x: 4, y: 5 }] },
-    });
-    annotation = reorderAnnotationAnchor(annotation, 'region', 0);
-    annotation = setAnnotationLegRoute(annotation, 'element', {
-      mode: 'manual', vertices: [{ x: 9, y: 9 }],
-    });
-    annotation = retargetAnnotationAnchor(annotation, 'point', {
-      kind: 'world-point', point: { x: 10, y: 10, z: 10 },
-    });
-    validateMultiLeader(annotation);
-    expect(annotation.anchors.map(({ id }) => id)).toEqual(['region', 'point', 'element']);
-    expect(annotation.anchors.find(({ id }) => id === 'region')?.route).toEqual({
-      mode: 'manual', vertices: [{ x: 4, y: 5 }],
-    });
-    annotation = removeAnnotationAnchor(annotation, 'region');
-    annotation = removeAnnotationAnchor(annotation, 'element');
-    expect(() => removeAnnotationAnchor(annotation, 'point')).toThrowError(expect.objectContaining({
-      code: 'INVARIANT_VIOLATION',
-      details: expect.objectContaining({ annotationId: 'multi', anchorId: 'point' }),
-    }));
-  });
 });
 
 describe('v1 transactional markup capability', () => {
@@ -595,19 +542,30 @@ describe('v1 transactional markup capability', () => {
     normal: { x: 0, y: 0, z: 1 },
   });
 
+  /** The capability on a bare document: no boundary, no host hooks. */
+  function capability(document: DocumentEngine): MarkupAuthoringCapability {
+    return new MarkupAuthoringCapability({
+      document,
+      assertActive: () => undefined,
+      prepareContent: (content) => content,
+      validateStyleId: () => undefined,
+    });
+  }
+
   it('commits a completed region once and restores exact geometry through undo/redo', () => {
     const document = new DocumentEngine();
-    const markup = new MarkupAuthoringCapability(document);
-    const session = markup.begin('rectangle');
-    session.establishPlane(plane);
-    session.setRegionGeometry({
-      kind: 'rectangle', center: { x: 1, y: 2 }, width: 4, height: 3,
+    const markup = capability(document);
+    void markup.start({
+      kind: 'rectangle',
+      draft: { id: 'region-annotation', content: { kind: 'plain-note', text: 'Region' } },
+      plane,
     });
-    const created = markup.commitRegion(session, {
-      id: 'region-annotation',
-      content: { kind: 'plain-note', text: 'Region' },
+    markup.setRegionGeometry({ kind: 'rectangle', center: { x: 1, y: 2 }, width: 4, height: 3 });
+    expect(markup.complete()).toMatchObject({
+      status: 'completed',
+      value: { anchors: [{ id: 'leg-1', anchor: { kind: 'region' } }] },
     });
-    expect(created.anchors[0]).toMatchObject({ id: 'leg-1', anchor: { kind: 'region' } });
+    const created = document.get('region-annotation')!;
     expect(document.historySnapshot(0).undoCount).toBe(1);
     const moved = markup.updateRegion(created.id, 'leg-1', (region) => moveRegion(region, { x: 5, y: 0 }));
     expect(regionAnchorFromCoreForTest(moved)).toMatchObject({
@@ -626,20 +584,16 @@ describe('v1 transactional markup capability', () => {
 
   it('keeps cancelled previews transient and supports ink create/edit/delete history', () => {
     const document = new DocumentEngine();
-    const markup = new MarkupAuthoringCapability(document);
-    const cancelled = markup.begin('ink');
-    cancelled.establishPlane(plane);
-    cancelled.appendInkPoint({ x: 0, y: 0 });
-    expect(cancelled.cancel()).toEqual({ status: 'cancelled' });
+    const markup = capability(document);
+    void markup.start({ kind: 'ink', commit: { id: 'ink-1' }, plane });
+    markup.appendInkPoint({ x: 0, y: 0 });
+    expect(markup.cancel()).toEqual({ status: 'cancelled', reason: 'host' });
     expect(document.document.ink).toEqual([]);
 
-    const session = markup.begin('ink');
-    session.establishPlane(plane);
-    session.appendInkPoint({ x: 0, y: 0 });
-    session.appendInkPoint({ x: 1, y: 1 });
-    session.appendInkPoint({ x: 2, y: 1 });
-    const ink = markup.commitInk(session, { id: 'ink-1' });
-    expect(ink.id).toBe('ink-1');
+    void markup.start({ kind: 'ink', commit: { id: 'ink-1' }, plane });
+    for (const point of [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 1 }]) markup.appendInkPoint(point);
+    expect(markup.complete()).toMatchObject({ status: 'completed', value: { kind: 'ink', id: 'ink-1' } });
+    const ink = markup.getInk('ink-1')!;
     markup.updateInk(ink.id, (current) => moveInk(current, { x: 1, y: 0 }));
     markup.removeInk(ink.id);
     expect(markup.listInk()).toEqual([]);
@@ -647,6 +601,55 @@ describe('v1 transactional markup capability', () => {
     expect(markup.getInk(ink.id)).toBeDefined();
     document.undo();
     expect(markup.getInk(ink.id)?.points[0]).toEqual({ x: 0, y: 0 });
+  });
+
+  it('adds, reorders, reroutes, retargets and removes anchor legs, refusing the last one', () => {
+    const document = new DocumentEngine();
+    const markup = capability(document);
+    document.create({
+      id: 'multi',
+      anchors: [{
+        id: 'point',
+        anchor: { kind: 'world-point', point: { x: 0, y: 0, z: 0 } },
+        routing: { kind: 'automatic', mode: 'straight' },
+      }],
+      content: { kind: 'plain-note', text: 'Mixed anchors' },
+    });
+    markup.addAnchor('multi', {
+      id: 'element',
+      anchor: {
+        kind: 'element', modelId: 'model', elementId: 'wall', fallbackPoint: { x: 1, y: 2, z: 3 },
+      },
+      routing: { kind: 'automatic', mode: 'orthogonal' },
+    });
+    markup.addAnchor('multi', {
+      id: 'region',
+      anchor: regionAnchorToCore(createRegionAnchor(plane, {
+        kind: 'rectangle', center: { x: 0, y: 0 }, width: 2, height: 2,
+      })),
+      routing: { kind: 'manual', vertices: [{ x: 4, y: 5 }] },
+    });
+    markup.reorderAnchor('multi', 'region', 0);
+    markup.setLegRoute('multi', 'element', { mode: 'manual', vertices: [{ x: 9, y: 9 }] });
+    const annotation = markup.retargetAnchor('multi', 'point', {
+      kind: 'world-point', point: { x: 10, y: 10, z: 10 },
+    });
+    expect(annotation.anchors.map(({ id }) => id)).toEqual(['region', 'point', 'element']);
+    expect(annotation.anchors.map(({ routing }) => routing)).toEqual([
+      { kind: 'manual', vertices: [{ x: 4, y: 5 }] },
+      { kind: 'automatic', mode: 'straight' },
+      { kind: 'manual', vertices: [{ x: 9, y: 9 }] },
+    ]);
+    expect(annotation.anchors[1]?.anchor).toEqual({ kind: 'world-point', point: { x: 10, y: 10, z: 10 } });
+    expect(() => markup.reorderAnchor('multi', 'region', 3)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_INPUT' }),
+    );
+    markup.removeAnchor('multi', 'region');
+    markup.removeAnchor('multi', 'element');
+    expect(() => markup.removeAnchor('multi', 'point')).toThrowError(expect.objectContaining({
+      code: 'INVARIANT_VIOLATION',
+      details: expect.objectContaining({ annotationId: 'multi', anchorId: 'point' }),
+    }));
   });
 });
 

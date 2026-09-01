@@ -40,30 +40,34 @@ describe('v1 public runtime content and markup integration', () => {
   it('renders one shared label, every ordered independently-routed leg, regions, and open ink', () => {
     const root = boundary();
     const leader = new ViewLeader({ boundary: root, adapters: adapters() });
-    const region = leader.authoring.markup.begin('revision-cloud');
-    region.establishPlane(plane);
-    region.setRegionGeometry({
+    const markup = leader.authoring.markup;
+    void markup.start({
+      kind: 'revision-cloud',
+      draft: {
+        id: 'mixed',
+        content: { kind: 'plain-note', text: 'Shared content' },
+        placement: { kind: 'manual', position: { x: 620, y: 120 } },
+      },
+      commit: { legId: 'region-leg', route: { mode: 'orthogonal' } },
+      plane,
+    });
+    markup.setRegionGeometry({
       kind: 'revision-cloud',
       vertices: [{ x: -4, y: -3 }, { x: 4, y: -3 }, { x: 4, y: 3 }, { x: -4, y: 3 }],
       arcLength: 2,
     });
-    leader.authoring.markup.commitRegion(region, {
-      id: 'mixed',
-      content: { kind: 'plain-note', text: 'Shared content' },
-      placement: { kind: 'manual', position: { x: 620, y: 120 } },
-    }, { legId: 'region-leg', route: { mode: 'orthogonal' } });
-    leader.authoring.markup.addAnchor('mixed', {
+    markup.complete();
+    markup.addAnchor('mixed', {
       id: 'point-leg',
       anchor: { kind: 'world-point', point: { x: -12, y: -8, z: 0 } },
       routing: { kind: 'manual', vertices: [{ x: 330, y: 420 }] },
     }, 0);
 
-    const ink = leader.authoring.markup.begin('ink');
-    ink.establishPlane(plane);
+    void markup.start({ kind: 'ink', commit: { id: 'stroke-a' }, plane });
     for (const point of [{ x: -10, y: 8 }, { x: -6, y: 10 }, { x: -2, y: 8 }, { x: 2, y: 9 }]) {
-      ink.appendInkPoint(point);
+      markup.appendInkPoint(point);
     }
-    leader.authoring.markup.commitInk(ink, { id: 'stroke-a' });
+    markup.complete();
     leader.update();
 
     const group = root.querySelector('[data-annotation-id="mixed"]');

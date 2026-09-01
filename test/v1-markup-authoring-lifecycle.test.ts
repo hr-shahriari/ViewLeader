@@ -259,7 +259,7 @@ describe('public normalized markup authoring lifecycle', () => {
         },
         plane,
       });
-      const preview = leader.authoring.markup.setRegionGeometry(geometry, 'keyboard');
+      const preview = leader.authoring.markup.setRegionGeometry(geometry);
       expect(preview).toMatchObject({
         phase: 'ready',
         preview: { kind: geometry.kind, geometry },
@@ -275,8 +275,8 @@ describe('public normalized markup authoring lifecycle', () => {
       kind: 'ink',
       commit: { id: 'managed-ink' },
     });
-    leader.authoring.markup.establishPlane(plane, 'programmatic');
-    leader.authoring.markup.appendInkPoint({ x: 0, y: 0 }, 'keyboard');
+    leader.authoring.markup.establishPlane(plane);
+    leader.authoring.markup.appendInkPoint({ x: 0, y: 0 });
     const inkPreview = leader.authoring.markup.appendInkPoint({ x: 2, y: 1 });
     expect(inkPreview).toMatchObject({
       phase: 'ready',

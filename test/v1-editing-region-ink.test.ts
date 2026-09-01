@@ -139,13 +139,14 @@ function dragRegionHandle(leader: ViewLeader, id: string, index: number, to: Vec
   leader.update();
 }
 
-/** Commits an ink stroke through the public markup session, which is the only way to create one. */
+/** Commits an ink stroke through the public markup tool, which is the only way to create one. */
 function createInk(leader: ViewLeader, id: string, points: readonly Vec2[]): InkAnnotation {
-  const session = leader.authoring.markup.begin('ink');
+  const markup = leader.authoring.markup;
   // Ink carries a full `DrawingPlane`; a region anchor carries the core three-field form instead.
-  session.establishPlane({ ...FLAT, yAxis: { x: 0, y: 1, z: 0 } });
-  for (const point of points) session.appendInkPoint(point);
-  return leader.authoring.markup.commitInk(session, { id });
+  void markup.start({ kind: 'ink', commit: { id }, plane: { ...FLAT, yAxis: { x: 0, y: 1, z: 0 } } });
+  for (const point of points) markup.appendInkPoint(point);
+  markup.complete();
+  return markup.getInk(id)!;
 }
 
 describe('region grips: what is published', () => {

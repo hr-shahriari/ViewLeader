@@ -64,7 +64,6 @@ export interface AuthoringPreview {
 
 export interface AuthoringSnapshot extends SnapshotStamp {
   readonly phase: 'idle' | 'aiming' | 'pending-pick' | 'drawing' | 'ready';
-  readonly sessionId: number | null;
   readonly pendingPick: boolean;
   readonly preview: AuthoringPreview | null;
   readonly status: string;
@@ -140,7 +139,6 @@ export class AuthoringController {
       runtimeRevision: stamp.runtimeRevision,
       documentRevision: stamp.documentRevision,
       phase: active?.phase ?? 'idle',
-      sessionId: active?.id ?? null,
       pendingPick: active?.phase === 'pending-pick',
       preview: active?.preview === null || active?.preview === undefined
         ? null

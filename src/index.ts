@@ -163,6 +163,7 @@ export {
   type MarkupAnnotationDraft,
   type MarkupAuthoringCancellationReason,
   type MarkupAuthoringIntegration,
+  type MarkupAuthoringOptions,
   type MarkupAuthoringOutcome,
   type MarkupAuthoringSnapshot,
   type StartInkMarkupAuthoringOptions,
@@ -171,8 +172,6 @@ export {
 } from './markup-authoring-capability.js';
 
 export {
-  DEFAULT_GEOMETRY_LIMITS,
-  MarkupAuthoringSession,
   addRegionVertex,
   createInk,
   createRegionAnchor,
@@ -195,7 +194,6 @@ export {
   type ClosedRegionGeometry,
   type DrawingPlane,
   type EllipseRegionGeometry,
-  type GeometryLimits,
   type InkAnnotation,
   type MarkupAuthoringPreview,
   type MarkupToolKind,
