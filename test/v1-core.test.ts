@@ -107,12 +107,20 @@ describe('fresh v1 core vertical slice', () => {
     expect(leader.annotations.remove('note-a')).toEqual(updated);
     expect(leader.annotations.getSnapshot().annotations).toEqual([]);
 
+    // A method handed out before disposal — to `useSyncExternalStore`, say — keeps one identity
+    // and still refuses afterwards; a detached class method still reaches its own instance.
+    const { getSnapshot } = leader.annotations;
+    const { list } = leader.definitions;
+    expect(leader.annotations.getSnapshot).toBe(getSnapshot);
+    expect(list().length).toBeGreaterThan(0);
     leader.dispose();
     leader.dispose();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
     expect(() => leader.update()).toThrow(DisposedError);
     expect(() => leader.annotations.getSnapshot()).toThrow(DisposedError);
+    expect(() => getSnapshot()).toThrow(DisposedError);
+    expect(() => list()).toThrow(DisposedError);
   });
 
   it('serializes deterministically and rejects replacement without observable mutation', () => {

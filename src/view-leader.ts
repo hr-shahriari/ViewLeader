@@ -390,7 +390,7 @@ export class ViewLeader {
       this.#pluginAuthoring = pluginAuthoring;
       markup = new MarkupAuthoringCapability({
         document: this.#document,
-        assertActive: () => this.#assertActive(),
+        assertActive: this.#assertActive,
         prepareContent: (content) => this.#preparePluginContent(content),
         validateStyleId: (styleId) => this.#requireStyleId(styleId),
         boundary: options.boundary,
@@ -441,26 +441,18 @@ export class ViewLeader {
       this.authoring = this.#createAuthoringCapability();
       this.documents = this.#createDocumentsCapability();
       this.history = this.#createHistoryCapability();
-      this.definitions = this.#guardDefinitions(definitions);
+      this.definitions = guarded(definitions, this.#assertActive);
       this.views = this.#views;
-      this.diagnostics = Object.freeze({
-        getSnapshot: () => {
-          this.#assertActive();
-          return this.#runtime.diagnosticsSnapshot();
-        },
-        subscribe: (listener: (diagnostic: Diagnostic) => void) => {
-          this.#assertActive();
-          return this.#runtime.subscribeDiagnostics(listener);
-        },
-        lintFrame: (options: FrameLintOptions) => {
-          this.#assertActive();
-          return this.#runtime.lintFrame(options);
-        },
-      });
-      this.geometry = Object.freeze({
-        of: (id: string) => { this.#assertActive(); return this.#runtime.geometryOf(id); },
-        ofInk: (id: string) => { this.#assertActive(); return this.#runtime.geometryOfInk(id); },
-      });
+      this.diagnostics = guarded({
+        getSnapshot: () => this.#runtime.diagnosticsSnapshot(),
+        subscribe: (listener: (diagnostic: Diagnostic) => void) =>
+        this.#runtime.subscribeDiagnostics(listener),
+        lintFrame: (options: FrameLintOptions) => this.#runtime.lintFrame(options),
+      }, this.#assertActive);
+      this.geometry = guarded({
+        of: (id: string) => this.#runtime.geometryOf(id),
+        ofInk: (id: string) => this.#runtime.geometryOfInk(id),
+      }, this.#assertActive);
       this.editing = this.#createEditingCapability();
       // The runtime is the thing that draws frames, but callers only ever hold a `ViewLeader`.
       // Linking them here keeps the seam reachable from `src/internal/` without putting a method on
@@ -644,25 +636,22 @@ export class ViewLeader {
   }
 
   #createAnnotationsCapability(): AnnotationsCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.annotationsSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
-      get: (id: string) => { this.#assertActive(); return this.#document.get(id); },
+    return guarded({
+      getSnapshot: () => this.#runtime.annotationsSnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
+      get: (id: string) => this.#document.get(id),
       create: (draft: AnnotationDraft) => {
-        this.#assertActive();
         this.#requireStyleId(draft.styleId);
         return this.#document.create({ ...draft, content: this.#preparePluginContent(draft.content) });
       },
       update: (id: string, patch: AnnotationPatch) => {
-        this.#assertActive();
         this.#requireStyleId(typeof patch.styleId === 'string' ? patch.styleId : undefined);
         return this.#document.update(id, patch.content === undefined
           ? patch
           : { ...patch, content: this.#preparePluginContent(patch.content) });
       },
-      remove: (id: string) => { this.#assertActive(); return this.#document.remove(id); },
+      remove: (id: string) => this.#document.remove(id),
       move: (id: string, position: Vec2) => {
-        this.#assertActive();
         // Kind-preserving. An absolute point goes in either way, but a label that already follows
         // its anchor keeps following it — otherwise a single arrow-key nudge silently undoes the
         // drag that placed it (the gallery's own host-chrome page nudges exactly this way). One
@@ -674,16 +663,10 @@ export class ViewLeader {
           : { kind: 'manual' as const, position };
         return this.#document.update(id, { placement }, 'Move annotation');
       },
-      retarget: (id: string, anchor: Anchor) => {
-        this.#assertActive();
-        return this.#document.update(id, { anchor }, 'Retarget annotation');
-      },
-      reroute: (id: string, routing: AnnotationRouting) => {
-        this.#assertActive();
-        return this.#document.update(id, { routing }, 'Reroute annotation');
-      },
+      retarget: (id: string, anchor: Anchor) => this.#document.update(id, { anchor }, 'Retarget annotation'),
+      reroute: (id: string, routing: AnnotationRouting) =>
+        this.#document.update(id, { routing }, 'Reroute annotation'),
       rerouteLeg: (id: string, legId: string, routing: AnnotationRouting) => {
-        this.#assertActive();
         return this.#document.update(
           id,
           { anchors: this.#withLeg(id, legId, (leg) => ({ ...leg, routing })) },
@@ -691,43 +674,32 @@ export class ViewLeader {
         );
       },
       retargetLeg: (id: string, legId: string, anchor: Anchor) => {
-        this.#assertActive();
         return this.#document.update(
           id,
           { anchors: this.#withLeg(id, legId, (leg) => ({ ...leg, anchor })) },
           'Retarget annotation leg',
         );
       },
-      resetPlacement: (id: string) => {
-        this.#assertActive();
-        return this.#document.update(id, { placement: { kind: 'automatic' } }, 'Reset annotation placement');
-      },
-      resetRouting: (id: string, mode: 'straight' | 'dogleg' | 'orthogonal' = 'straight') => {
-        this.#assertActive();
-        return this.#document.update(id, { routing: { kind: 'automatic', mode } }, 'Reset annotation routing');
-      },
+      resetPlacement: (id: string) =>
+        this.#document.update(id, { placement: { kind: 'automatic' } }, 'Reset annotation placement'),
+      resetRouting: (id: string, mode: 'straight' | 'dogleg' | 'orthogonal' = 'straight') =>
+        this.#document.update(id, { routing: { kind: 'automatic', mode } }, 'Reset annotation routing'),
       align: (edge: AlignEdge) => {
-        this.#assertActive();
         this.#arrange(alignMoves(this.#selectedTargets(), edge), 'Align annotations');
       },
       distribute: (axis: 'x' | 'y') => {
-        this.#assertActive();
         this.#arrange(distributeMoves(this.#selectedTargets(), axis), 'Distribute annotations');
       },
       select: (ids: readonly string[]) => {
-        this.#assertActive();
         for (const id of ids) this.#requireAnnotation(id);
         this.#runtime.select(ids);
       },
-      toggle: (id: string) => { this.#assertActive(); this.#requireAnnotation(id); this.#runtime.toggleSelection(id); },
-      deselect: (id: string) => { this.#assertActive(); this.#requireAnnotation(id); this.#runtime.deselect(id); },
-      clearSelection: () => { this.#assertActive(); this.#runtime.clearSelection(); },
-      keynotes: () => { this.#assertActive(); return keynotesOf(this.#document.document.annotations); },
-      resolvedStyle: (id: string) => {
-        this.#assertActive();
-        return this.#runtime.resolvedStyleOf(id);
-      },
-    });
+      toggle: (id: string) => { this.#requireAnnotation(id); this.#runtime.toggleSelection(id); },
+      deselect: (id: string) => { this.#requireAnnotation(id); this.#runtime.deselect(id); },
+      clearSelection: () => { this.#runtime.clearSelection(); },
+      keynotes: () => keynotesOf(this.#document.document.annotations),
+      resolvedStyle: (id: string) => this.#runtime.resolvedStyleOf(id),
+    }, this.#assertActive);
   }
 
   /**
@@ -765,13 +737,12 @@ export class ViewLeader {
   }
 
   #createAuthoringCapability(): AuthoringCapability {
-    return Object.freeze({
+    return guarded({
       markup: this.#markup,
       plugins: this.#pluginAuthoring,
-      getSnapshot: () => { this.#assertActive(); return this.#authoring.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#authoring.subscribe(listener); },
+      getSnapshot: () => this.#authoring.getSnapshot(),
+      subscribe: (listener: () => void) => this.#authoring.subscribe(listener),
       start: (options: StartAuthoringOptions) => {
-        this.#assertActive();
         this.#pluginAuthoring.cancel('preempted');
         this.#markup.cancel('preempted');
         return this.#authoring.start({
@@ -782,13 +753,13 @@ export class ViewLeader {
           },
         });
       },
-      pointerMove: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#authoring.pointerMove(pointer); },
-      pointerDown: (pointer: NormalizedPointerInput) => { this.#assertActive(); return this.#authoring.pointerDown(pointer); },
-      complete: (anchor: Anchor) => { this.#assertActive(); return this.#authoring.complete(anchor); },
-      addVertex: (point: Vec2) => { this.#assertActive(); return this.#authoring.addVertex(point); },
-      finish: () => { this.#assertActive(); return this.#authoring.finish(); },
-      cancel: () => { this.#assertActive(); return this.#authoring.cancel(); },
-    });
+      pointerMove: (pointer: NormalizedPointerInput) => { this.#authoring.pointerMove(pointer); },
+      pointerDown: (pointer: NormalizedPointerInput) => this.#authoring.pointerDown(pointer),
+      complete: (anchor: Anchor) => this.#authoring.complete(anchor),
+      addVertex: (point: Vec2) => this.#authoring.addVertex(point),
+      finish: () => this.#authoring.finish(),
+      cancel: () => this.#authoring.cancel(),
+    }, this.#assertActive);
   }
 
   /** True while a drawing tool is active, which is when editing gestures get out of the way. */
@@ -799,92 +770,66 @@ export class ViewLeader {
   }
 
   #createEditingCapability(): EditingCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#editing.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#editing.subscribe(listener); },
-      hitTest: (pointer: NormalizedPointerInput) => { this.#assertActive(); return this.#editing.hitTest(pointer); },
-      hitTestScreen: (at: Vec2) => { this.#assertActive(); return this.#editing.hitTestScreen(at); },
-      pointerDown: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerDown(pointer); },
+    return guarded({
+      getSnapshot: () => this.#editing.getSnapshot(),
+      subscribe: (listener: () => void) => this.#editing.subscribe(listener),
+      hitTest: (pointer: NormalizedPointerInput) => this.#editing.hitTest(pointer),
+      hitTestScreen: (at: Vec2) => this.#editing.hitTestScreen(at),
+      pointerDown: (pointer: NormalizedPointerInput) => { this.#editing.pointerDown(pointer); },
       beginHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginHandleDrag(id, index, pointer);
       },
       beginRouteHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginRouteHandleDrag(id, index, pointer);
       },
       beginRegionHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginRegionHandleDrag(id, index, pointer);
       },
       beginInkPointDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         if (this.#markup.getInk(id) === undefined) throw new NotFoundError('ink', id);
         this.#editing.beginInkPointDrag(id, index, pointer);
       },
-      pointerMove: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerMove(pointer); },
-      pointerUp: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerUp(pointer); },
-      cancel: () => { this.#assertActive(); this.#editing.cancel(); },
-    });
+      pointerMove: (pointer: NormalizedPointerInput) => { this.#editing.pointerMove(pointer); },
+      pointerUp: (pointer: NormalizedPointerInput) => { this.#editing.pointerUp(pointer); },
+      cancel: () => { this.#editing.cancel(); },
+    }, this.#assertActive);
   }
 
   #createDocumentsCapability(): DocumentsCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.documentsSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
+    return guarded({
+      getSnapshot: () => this.#runtime.documentsSnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
       parse: (source: string) => {
-        this.#assertActive();
         const loadDiagnostics: Diagnostic[] = [];
         const prepared = this.#prepareReplacement(this.#load(source, loadDiagnostics));
         this.#publishDiagnostics([...loadDiagnostics, ...prepared.diagnostics]);
         return prepared.document;
       },
-      serialize: () => { this.#assertActive(); return this.#document.serialize(); },
+      serialize: () => this.#document.serialize(),
       replace: (value: string | ViewLeaderDocument) => {
-        this.#assertActive();
         const loadDiagnostics: Diagnostic[] = [];
         const prepared = this.#prepareReplacement(this.#load(value, loadDiagnostics));
         const replaced = this.#document.replace(prepared.document);
         this.#publishDiagnostics([...loadDiagnostics, ...prepared.diagnostics]);
         return replaced;
       },
-    });
+    }, this.#assertActive);
   }
 
   #createHistoryCapability(): HistoryCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.historySnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
-      transaction: <Result>(label: string, operation: () => Result, options?: TransactionOptions) => {
-        this.#assertActive();
-        return this.#document.transaction(label, operation, options);
-      },
-      undo: () => { this.#assertActive(); return this.#document.undo(); },
-      redo: () => { this.#assertActive(); return this.#document.redo(); },
-    });
+    return guarded({
+      getSnapshot: () => this.#runtime.historySnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
+      transaction: <Result>(label: string, operation: () => Result, options?: TransactionOptions) =>
+        this.#document.transaction(label, operation, options),
+      undo: () => this.#document.undo(),
+      redo: () => this.#document.redo(),
+    }, this.#assertActive);
   }
 
-  #guardDefinitions(capability: DefinitionsCapability): DefinitionsPublicCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return capability.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return capability.subscribe(listener); },
-      list: (kind?: DefinitionKind) => { this.#assertActive(); return capability.list(kind); },
-      get: (id: string) => { this.#assertActive(); return capability.get(id); },
-      create: <Definition extends TypedDefinition>(definition: Definition) => {
-        this.#assertActive(); return capability.create(definition);
-      },
-      update: <Definition extends TypedDefinition>(id: string, replacement: Definition) => {
-        this.#assertActive(); return capability.update(id, replacement);
-      },
-      remove: (id: string) => { this.#assertActive(); return capability.remove(id); },
-      applyTemplate: <Target extends TemplateApplicable>(target: Target, templateId: string) => {
-        this.#assertActive(); return capability.applyTemplate(target, templateId);
-      },
-    });
-  }
 
   #preparePluginContent(content: Annotation['content']): Annotation['content'] {
     if (!content.kind.startsWith('plugin:')) return content;
@@ -1030,14 +975,39 @@ export class ViewLeader {
     }
   }
 
-  #assertActive(): void {
+  readonly #assertActive = (): void => {
     if (this.#disposed) throw new DisposedError();
-  }
+  };
 }
 
 function isElement(value: unknown): value is Element {
   return value !== null && typeof value === 'object' &&
     'ownerDocument' in value && 'appendChild' in value && 'getBoundingClientRect' in value;
+}
+
+/**
+ * `target` with every method checking `check()` first. Methods are called with `target` as `this`,
+ * so a class instance keeps its private fields, and each wrapper is made once so a method has one
+ * identity — a host that hands `subscribe` to `useSyncExternalStore` must not resubscribe every
+ * render. Writes are refused, as on the frozen objects this replaces.
+ */
+function guarded<T extends object>(target: T, check: () => void): T {
+  const methods = new Map<PropertyKey, unknown>();
+  return new Proxy(target, {
+    get(object, key) {
+      const value: unknown = Reflect.get(object, key);
+      if (typeof value !== 'function') return value;
+      let method = methods.get(key);
+      if (method === undefined) {
+        method = (...args: unknown[]): unknown => { check(); return value.apply(object, args); };
+        methods.set(key, method);
+      }
+      return method;
+    },
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  });
 }
 
 function runCleanupSteps(steps: readonly (() => void)[]): unknown[] {
