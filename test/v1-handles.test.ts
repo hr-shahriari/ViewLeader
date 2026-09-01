@@ -199,16 +199,20 @@ describe('handle enumeration', () => {
 
   it('reaches a freehand stroke through the same call with an ink target', () => {
     const harness = viewer();
-    // A markup session is the only way to make one.
-    const session = harness.leader.authoring.markup.begin('ink');
-    session.establishPlane({
-      origin: { x: 0, y: 0, z: 0 },
-      normal: { x: 0, y: 0, z: 1 },
-      xAxis: { x: 1, y: 0, z: 0 },
-      yAxis: { x: 0, y: 1, z: 0 },
+    // The markup tool is the only way to make one.
+    const markup = harness.leader.authoring.markup;
+    void markup.start({
+      kind: 'ink',
+      commit: { id: 'ink-1' },
+      plane: {
+        origin: { x: 0, y: 0, z: 0 },
+        normal: { x: 0, y: 0, z: 1 },
+        xAxis: { x: 1, y: 0, z: 0 },
+        yAxis: { x: 0, y: 1, z: 0 },
+      },
     });
-    for (const point of [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }]) session.appendInkPoint(point);
-    harness.leader.authoring.markup.commitInk(session, { id: 'ink-1' });
+    for (const point of [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }]) markup.appendInkPoint(point);
+    markup.complete();
     harness.leader.update();
     const entries = harness.controllerFor({ ink: 'ink-1' }).getSnapshot();
 

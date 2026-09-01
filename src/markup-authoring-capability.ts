@@ -24,13 +24,17 @@ import {
   legRouteToCore,
   regionAnchorFromCore,
   regionAnchorToCore,
+  validateIndex,
+  validateInsertIndex,
   worldPointToDrawingPlane,
-  type GeometryLimits,
+  type ClosedRegionGeometry,
+  type DrawingPlane,
   type InkAnnotation,
   type MarkupAuthoringPreview,
   type MarkupToolKind,
   type RegionAnchor,
 } from './markup.js';
+import { isPointerEvent, normalizePointer, validatePointer } from './pointer.js';
 import type { LegRoute } from './routing.js';
 import type {
   Anchor,
@@ -71,8 +75,7 @@ export type MarkupAuthoringOutcome =
   | { readonly status: 'failed'; readonly error: ViewLeaderError };
 
 interface StartMarkupBase {
-  readonly limits?: GeometryLimits;
-  readonly plane?: import('./markup.js').DrawingPlane;
+  readonly plane?: DrawingPlane;
 }
 
 export interface StartRegionMarkupAuthoringOptions extends StartMarkupBase {
@@ -97,10 +100,8 @@ export interface ManagedMarkupAuthoringPreview extends MarkupAuthoringPreview {
 
 export interface MarkupAuthoringSnapshot extends SnapshotStamp {
   readonly phase: 'idle' | 'awaiting-plane' | 'pending-pick' | 'drawing' | 'ready';
-  readonly sessionId: number | null;
   readonly pendingPick: boolean;
   readonly preview: ManagedMarkupAuthoringPreview | null;
-  readonly status: string;
 }
 
 /**
@@ -116,6 +117,13 @@ export interface MarkupAuthoringIntegration {
   readonly preemptOthers?: () => void;
 }
 
+export interface MarkupAuthoringOptions extends MarkupAuthoringIntegration {
+  readonly document: DocumentEngine;
+  readonly assertActive: () => void;
+  readonly prepareContent: (content: AnnotationContent) => AnnotationContent;
+  readonly validateStyleId: (styleId: string | undefined) => void;
+}
+
 interface ActiveMarkupAuthoring {
   readonly id: number;
   readonly options: StartMarkupAuthoringOptions;
@@ -123,7 +131,8 @@ interface ActiveMarkupAuthoring {
   readonly promise: Promise<MarkupAuthoringOutcome>;
   readonly resolve: (outcome: MarkupAuthoringOutcome) => void;
   readonly lease?: InteractionLease;
-  readonly cleanup: (() => void)[];
+  /** Aborting it removes every DOM listener the session added. */
+  readonly listeners: AbortController;
   pick: AbortController | undefined;
   pointer: NormalizedPointerInput | null;
   gestureStartPointer: NormalizedPointerInput | null;
@@ -149,40 +158,20 @@ export class MarkupAuthoringCapability {
   readonly #listeners = new Set<() => void>();
   readonly #documentUnsubscribe: Unsubscribe | undefined;
   #active: ActiveMarkupAuthoring | undefined;
-  #legacySession: MarkupAuthoringSession | undefined;
   #sequence = 0;
-  #status = 'Markup authoring inactive';
   #disposed = false;
 
-  public constructor(
-    document: DocumentEngine,
-    assertActive: () => void = () => undefined,
-    prepareContent: (content: AnnotationContent) => AnnotationContent = (content) => content,
-    validateStyleId: (styleId: string | undefined) => void = () => undefined,
-    integration: MarkupAuthoringIntegration = {},
-  ) {
-    this.#document = document;
-    this.#assertActive = assertActive;
-    this.#prepareContent = prepareContent;
-    this.#validateStyleId = validateStyleId;
-    this.#integration = integration;
-    this.#documentUnsubscribe = integration.boundary === undefined
+  public constructor(options: MarkupAuthoringOptions) {
+    this.#document = options.document;
+    this.#assertActive = options.assertActive;
+    this.#prepareContent = options.prepareContent;
+    this.#validateStyleId = options.validateStyleId;
+    this.#integration = options;
+    this.#documentUnsubscribe = options.boundary === undefined
       ? undefined
-      : document.subscribe((commit) => {
+      : options.document.subscribe((commit) => {
         if (commit.kind === 'replacement') this.#cancel('document-replaced', false);
       });
-  }
-
-  public begin(kind: MarkupToolKind, limits?: GeometryLimits): MarkupAuthoringSession {
-    this.#assertUsable();
-    this.cancel('preempted');
-    this.#legacySession?.cancel();
-    this.#integration.preemptOthers?.();
-    const session = limits === undefined
-      ? new MarkupAuthoringSession(kind)
-      : new MarkupAuthoringSession(kind, limits);
-    this.#legacySession = session;
-    return session;
   }
 
   public getSnapshot(): MarkupAuthoringSnapshot {
@@ -195,12 +184,10 @@ export class MarkupAuthoringCapability {
     return Object.freeze({
       ...stamp,
       phase: active?.phase ?? 'idle',
-      sessionId: active?.id ?? null,
       pendingPick: active?.phase === 'pending-pick',
       preview: active === undefined
         ? null
         : immutablePreview(active.session.preview, active.pointer, active.pointerPoints),
-      status: this.#status,
     });
   }
 
@@ -219,13 +206,9 @@ export class MarkupAuthoringCapability {
   public start(options: StartMarkupAuthoringOptions): Promise<MarkupAuthoringOutcome> {
     this.#assertUsable();
     this.cancel('preempted');
-    this.#legacySession?.cancel();
-    this.#legacySession = undefined;
     this.#integration.preemptOthers?.();
     const normalizedOptions = structuredClone(options);
-    const session = normalizedOptions.limits === undefined
-      ? new MarkupAuthoringSession(normalizedOptions.kind)
-      : new MarkupAuthoringSession(normalizedOptions.kind, normalizedOptions.limits);
+    const session = new MarkupAuthoringSession(normalizedOptions.kind);
     if (normalizedOptions.plane !== undefined) session.establishPlane(normalizedOptions.plane);
     let resolve!: (outcome: MarkupAuthoringOutcome) => void;
     const promise = new Promise<MarkupAuthoringOutcome>((settle) => { resolve = settle; });
@@ -235,7 +218,6 @@ export class MarkupAuthoringCapability {
     } catch (cause) {
       const error = new AdapterError('interaction lease acquisition', cause);
       resolve(Object.freeze({ status: 'failed', error }));
-      this.#status = error.message;
       this.#publish();
       return promise;
     }
@@ -247,7 +229,7 @@ export class MarkupAuthoringCapability {
       promise,
       resolve,
       ...(lease === undefined ? {} : { lease }),
-      cleanup: [],
+      listeners: new AbortController(),
       pick: undefined,
       pointer: null,
       gestureStartPointer: null,
@@ -259,16 +241,13 @@ export class MarkupAuthoringCapability {
     };
     this.#active = active;
     this.#connectInput(active);
-    this.#status = normalizedOptions.plane === undefined
-      ? `Choose a drawing plane for ${normalizedOptions.kind}`
-      : `${normalizedOptions.kind} authoring active`;
     this.#publish(true);
     return promise;
   }
 
   public async pointerMove(pointer: NormalizedPointerInput): Promise<void> {
     this.#assertUsable();
-    validateNormalizedPointer(pointer);
+    validatePointer(pointer);
     const active = this.#active;
     if (active === undefined) return;
     active.pointer = Object.freeze({ ...pointer });
@@ -281,7 +260,7 @@ export class MarkupAuthoringCapability {
 
   public async pointerDown(pointer: NormalizedPointerInput): Promise<void> {
     this.#assertUsable();
-    validateNormalizedPointer(pointer);
+    validatePointer(pointer);
     const active = this.#active;
     if (active === undefined || active.drawing) return;
     active.gestureStartPointer = Object.freeze({ ...pointer });
@@ -290,7 +269,7 @@ export class MarkupAuthoringCapability {
 
   public async pointerUp(pointer: NormalizedPointerInput): Promise<void> {
     this.#assertUsable();
-    validateNormalizedPointer(pointer);
+    validatePointer(pointer);
     const active = this.#active;
     if (active === undefined) return;
     if (!active.drawing) {
@@ -307,40 +286,28 @@ export class MarkupAuthoringCapability {
    * Starts a tool on a plane given directly, rather than one worked out from where the user
    * clicked. For keyboard-driven drawing and for scripts, neither of which has a pointer to ask.
    */
-  public establishPlane(
-    plane: import('./markup.js').DrawingPlane,
-    source: 'keyboard' | 'programmatic' = 'programmatic',
-  ): MarkupAuthoringSnapshot {
+  public establishPlane(plane: DrawingPlane): MarkupAuthoringSnapshot {
     const active = this.#requireActive();
     active.pick?.abort();
     active.pick = undefined;
     active.session.establishPlane(plane);
     active.phase = 'drawing';
-    this.#status = `${active.options.kind} drawing plane supplied by ${source}`;
     this.#publish(true);
     return this.getSnapshot();
   }
 
-  public setRegionGeometry(
-    geometry: import('./markup.js').ClosedRegionGeometry,
-    source: 'keyboard' | 'programmatic' = 'programmatic',
-  ): MarkupAuthoringSnapshot {
+  public setRegionGeometry(geometry: ClosedRegionGeometry): MarkupAuthoringSnapshot {
     const active = this.#requireActive();
     active.session.setRegionGeometry(geometry);
     active.phase = 'ready';
-    this.#status = `${geometry.kind} preview updated by ${source}`;
     this.#publish(true);
     return this.getSnapshot();
   }
 
-  public appendInkPoint(
-    point: import('./types.js').Vec2,
-    source: 'keyboard' | 'programmatic' = 'programmatic',
-  ): MarkupAuthoringSnapshot {
+  public appendInkPoint(point: Vec2): MarkupAuthoringSnapshot {
     const active = this.#requireActive();
     const points = active.session.appendInkPoint(point);
     active.phase = points.length >= 2 ? 'ready' : 'drawing';
-    this.#status = `Ink preview updated by ${source}`;
     this.#publish(true);
     return this.getSnapshot();
   }
@@ -352,16 +319,15 @@ export class MarkupAuthoringCapability {
     if (active.phase !== 'ready') {
       const error = new InvalidInputError('Markup authoring is not ready to complete');
       const outcome = Object.freeze({ status: 'failed' as const, error });
-      this.#finish(active, outcome, error.message);
+      this.#finish(active, outcome);
       return outcome;
     }
     try {
       const value = this.#document.transaction(`Create ${active.options.kind}`, () => {
         const committed = active.options.kind === 'ink'
-          ? this.commitInk(active.session, active.options.commit)
-          : this.commitRegion(active.session, active.options.draft, active.options.commit);
+          ? this.#commitInk(active.session, active.options.commit)
+          : this.#commitRegion(active.session, active.options.draft, active.options.commit);
         this.#quiesce(active);
-        this.#status = `${active.options.kind} created`;
         return committed;
       });
       const outcome = Object.freeze({ status: 'completed' as const, value });
@@ -374,7 +340,7 @@ export class MarkupAuthoringCapability {
         ? cause
         : new InvalidInputError('Markup completion failed', { cause });
       const outcome = Object.freeze({ status: 'failed' as const, error });
-      this.#finish(active, outcome, error.message);
+      this.#finish(active, outcome);
       return outcome;
     }
   }
@@ -390,8 +356,6 @@ export class MarkupAuthoringCapability {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#cancel('disposed', false);
-    this.#legacySession?.cancel();
-    this.#legacySession = undefined;
     this.#documentUnsubscribe?.();
     this.#listeners.clear();
   }
@@ -401,30 +365,21 @@ export class MarkupAuthoringCapability {
     publish: boolean,
   ): MarkupAuthoringOutcome | null {
     const active = this.#active;
-    if (active === undefined) {
-      if (this.#legacySession === undefined) return null;
-      this.#legacySession.cancel();
-      this.#legacySession = undefined;
-      const outcome = Object.freeze({ status: 'cancelled' as const, reason });
-      this.#status = markupCancellationStatus(reason);
-      if (publish) this.#publish(true);
-      return outcome;
-    }
+    if (active === undefined) return null;
     active.session.cancel();
     const outcome = Object.freeze({ status: 'cancelled' as const, reason });
-    this.#finish(active, outcome, markupCancellationStatus(reason), publish);
+    this.#finish(active, outcome, publish);
     return outcome;
   }
 
-  public commitRegion(
+  #commitRegion(
     session: MarkupAuthoringSession,
     draft: MarkupAnnotationDraft,
     options: CommitRegionOptions = {},
   ): Annotation {
-    this.#assertUsable();
     this.#validateStyleId(draft.styleId);
     const anchor = session.completeRegion();
-    const result = this.#document.create({
+    return this.#document.create({
       ...draft,
       content: this.#prepareContent(draft.content),
       anchors: [{
@@ -433,18 +388,12 @@ export class MarkupAuthoringCapability {
         routing: legRouteToCore(options.route ?? { mode: 'dogleg' }),
       }],
     }, `Create ${anchor.geometry.kind} annotation`);
-    if (this.#legacySession === session) this.#legacySession = undefined;
-    return result;
   }
 
-  public commitInk(
-    session: MarkupAuthoringSession,
-    options: CommitInkOptions,
-  ): InkAnnotation {
-    this.#assertUsable();
+  #commitInk(session: MarkupAuthoringSession, options: CommitInkOptions): InkAnnotation {
     this.#validateStyleId(options.styleId);
     const ink = session.completeInk(options.id, options.metadata ?? {}, options.styleId);
-    const result = this.#document.edit('Create ink', (document) => {
+    return this.#document.edit('Create ink', (document) => {
       const records = document.ink.map((stored) => inkFromJson(stored));
       if (records.some(({ id }) => id === ink.id)) {
         throw new InvalidInputError(`Ink "${ink.id}" already exists`, { id: ink.id });
@@ -454,8 +403,6 @@ export class MarkupAuthoringCapability {
         result: ink,
       };
     });
-    if (this.#legacySession === session) this.#legacySession = undefined;
-    return result;
   }
 
   public listInk(): readonly InkAnnotation[] {
@@ -531,7 +478,7 @@ export class MarkupAuthoringCapability {
       throw new InvalidInputError(`Duplicate anchor leg "${leg.id}"`, { annotationId, legId: leg.id });
     }
     const target = index ?? annotation.anchors.length;
-    assertInsertionIndex(target, annotation.anchors.length);
+    validateInsertIndex(target, annotation.anchors.length);
     const anchors = [
       ...annotation.anchors.slice(0, target),
       structuredClone(leg),
@@ -580,7 +527,7 @@ export class MarkupAuthoringCapability {
     this.#assertUsable();
     const annotation = this.#requireAnnotation(annotationId);
     const leg = requireLeg(annotation, legId);
-    assertExistingIndex(toIndex, annotation.anchors.length);
+    validateIndex(toIndex, annotation.anchors.length);
     const anchors = annotation.anchors.filter(({ id }) => id !== legId);
     anchors.splice(toIndex, 0, leg);
     return this.#document.update(annotationId, { anchors }, 'Reorder annotation anchor');
@@ -620,22 +567,16 @@ export class MarkupAuthoringCapability {
         this.cancel('escape');
       }
     };
-    boundary.addEventListener('pointermove', pointerMove);
-    boundary.addEventListener('pointerdown', pointerDown);
-    boundary.addEventListener('pointerleave', pointerLeave);
-    boundary.addEventListener('pointerup', pointerUp);
-    boundary.ownerDocument.addEventListener('keydown', keyDown);
-    active.cleanup.push(
-      () => boundary.removeEventListener('pointermove', pointerMove),
-      () => boundary.removeEventListener('pointerdown', pointerDown),
-      () => boundary.removeEventListener('pointerleave', pointerLeave),
-      () => boundary.removeEventListener('pointerup', pointerUp),
-      () => boundary.ownerDocument.removeEventListener('keydown', keyDown),
-    );
+    const { signal } = active.listeners;
+    boundary.addEventListener('pointermove', pointerMove, { signal });
+    boundary.addEventListener('pointerdown', pointerDown, { signal });
+    boundary.addEventListener('pointerleave', pointerLeave, { signal });
+    boundary.addEventListener('pointerup', pointerUp, { signal });
+    boundary.ownerDocument.addEventListener('keydown', keyDown, { signal });
   }
 
   #fail(active: ActiveMarkupAuthoring, error: ViewLeaderError): void {
-    this.#finish(active, Object.freeze({ status: 'failed', error }), error.message);
+    this.#finish(active, Object.freeze({ status: 'failed', error }));
   }
 
   async #samplePointer(
@@ -653,9 +594,6 @@ export class MarkupAuthoringCapability {
     active.pick = controller;
     active.pointer = Object.freeze({ ...pointer });
     active.phase = 'pending-pick';
-    this.#status = stage === 'down' && active.session.preview.plane === null
-      ? 'Picking a model drawing plane'
-      : `Sampling ${active.options.kind} geometry`;
     this.#publish(true);
     try {
       const hit = await picking.pickSurface({ pointer }, controller.signal);
@@ -666,7 +604,6 @@ export class MarkupAuthoringCapability {
           this.#fail(active, new InvalidInputError('No model surface was found at that point'));
         } else {
           active.phase = 'drawing';
-          this.#status = 'No model surface sample was found';
           this.#publish(true);
         }
         return;
@@ -688,9 +625,6 @@ export class MarkupAuthoringCapability {
         active.gestureStartPointer = null;
       }
       active.phase = stage === 'up' && ready ? 'ready' : 'drawing';
-      this.#status = active.phase === 'ready'
-        ? `${active.options.kind} pointer drawing ready`
-        : `Drawing ${active.options.kind}`;
       this.#publish(true);
     } catch (cause) {
       if (this.#active !== active || active.pick !== controller || controller.signal.aborted) return;
@@ -735,19 +669,12 @@ export class MarkupAuthoringCapability {
     return true;
   }
 
-  #finish(
-    active: ActiveMarkupAuthoring,
-    outcome: MarkupAuthoringOutcome,
-    status: string,
-    publish = true,
-  ): void {
+  #finish(active: ActiveMarkupAuthoring, outcome: MarkupAuthoringOutcome, publish = true): void {
     if (active.settled || (!active.detached && this.#active !== active)) return;
     this.#quiesce(active);
     active.settled = true;
     active.resolve(outcome);
-    if (this.#active !== undefined) return;
-    this.#status = status;
-    if (publish) this.#publish(true);
+    if (publish && this.#active === undefined) this.#publish(true);
   }
 
   #quiesce(active: ActiveMarkupAuthoring): void {
@@ -756,7 +683,7 @@ export class MarkupAuthoringCapability {
     active.detached = true;
     active.pick?.abort();
     active.pick = undefined;
-    for (const cleanup of active.cleanup.splice(0)) cleanup();
+    active.listeners.abort();
     try { active.lease?.release(); } catch { /* lease ownership has ended */ }
   }
 
@@ -782,14 +709,7 @@ function immutablePreview(
   pointer: NormalizedPointerInput | null,
   pointerPoints: readonly Vec2[],
 ): ManagedMarkupAuthoringPreview {
-  const clone = structuredClone({ ...preview, pointer, pointerPoints });
-  const freeze = (value: unknown): void => {
-    if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
-    Object.freeze(value);
-    for (const child of Object.values(value)) freeze(child);
-  };
-  freeze(clone);
-  return clone;
+  return Object.freeze(structuredClone({ ...preview, pointer, pointerPoints }));
 }
 
 function samePoint(left: Vec2, right: Vec2): boolean {
@@ -806,62 +726,8 @@ function revisionCloudArcLength(points: readonly Vec2[]): number {
   return Math.max(0.001, diagonal / 12);
 }
 
-function validateNormalizedPointer(pointer: NormalizedPointerInput): void {
-  if (
-    !Number.isFinite(pointer.x) || pointer.x < 0 || pointer.x > 1
-    || !Number.isFinite(pointer.y) || pointer.y < 0 || pointer.y > 1
-  ) {
-    throw new InvalidInputError('Normalized pointer coordinates must be between 0 and 1');
-  }
-}
-
-function normalizePointer(event: PointerEvent, boundary: Element): NormalizedPointerInput {
-  const bounds = boundary.getBoundingClientRect();
-  const clamp = (value: number): number => Math.min(1, Math.max(0, value));
-  return Object.freeze({
-    x: bounds.width === 0 ? 0 : clamp((event.clientX - bounds.left) / bounds.width),
-    y: bounds.height === 0 ? 0 : clamp((event.clientY - bounds.top) / bounds.height),
-    button: event.button,
-    buttons: event.buttons,
-    pointerType: event.pointerType === 'pen' || event.pointerType === 'touch'
-      ? event.pointerType
-      : 'mouse',
-    altKey: event.altKey,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    shiftKey: event.shiftKey,
-  });
-}
-
-function isPointerEvent(event: Event): event is PointerEvent {
-  return 'clientX' in event && 'clientY' in event && 'pointerType' in event;
-}
-
-function markupCancellationStatus(reason: MarkupAuthoringCancellationReason): string {
-  switch (reason) {
-    case 'escape': return 'Markup authoring cancelled';
-    case 'preempted': return 'Previous markup tool cancelled';
-    case 'pointer-exit': return 'Markup authoring cancelled after pointer exit';
-    case 'document-replaced': return 'Markup authoring cancelled because the document changed';
-    case 'disposed': return 'Markup authoring disposed';
-    case 'host': return 'Markup authoring cancelled';
-  }
-}
-
 function requireLeg(annotation: Annotation, legId: string): AnnotationLeg {
   const leg = annotation.anchors.find(({ id }) => id === legId);
   if (leg === undefined) throw new NotFoundError('anchor leg', legId);
   return leg;
-}
-
-function assertInsertionIndex(index: number, length: number): void {
-  if (!Number.isInteger(index) || index < 0 || index > length) {
-    throw new InvalidInputError('Anchor insertion index is out of range', { index, length });
-  }
-}
-
-function assertExistingIndex(index: number, length: number): void {
-  if (!Number.isInteger(index) || index < 0 || index >= length) {
-    throw new InvalidInputError('Anchor index is out of range', { index, length });
-  }
 }
