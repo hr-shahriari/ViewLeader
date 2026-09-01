@@ -17,7 +17,7 @@ export interface ArrangeTarget {
  * Where one label should move to. Labels already in the right place are left out entirely, so
  * pressing align twice is one undo step and then nothing.
  */
-export interface ArrangeMove {
+interface ArrangeMove {
   readonly id: string;
   readonly position: { readonly x: number; readonly y: number };
 }

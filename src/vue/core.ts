@@ -8,7 +8,7 @@
  * documented Vue API did not accept the thing its own examples pass. The runtime probe in
  * {@link resolveVueSource} still checks `__v_isRef`, so only a genuine ref is ever unwrapped.
  */
-export interface VueRefLike<Value> {
+interface VueRefLike<Value> {
   readonly __v_isRef?: boolean;
   readonly value: Value;
 }

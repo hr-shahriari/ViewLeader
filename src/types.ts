@@ -156,7 +156,7 @@ export interface PluginContent {
 
 export type AnnotationContent = BuiltInContent | PluginContent;
 
-export interface AutomaticPlacement {
+interface AutomaticPlacement {
   readonly kind: 'automatic';
 }
 
@@ -180,7 +180,7 @@ export interface ManualPlacement {
 
 export type AnnotationPlacement = AutomaticPlacement | ManualPlacement;
 
-export interface AutomaticRouting {
+interface AutomaticRouting {
   readonly kind: 'automatic';
   readonly mode: 'straight' | 'dogleg' | 'orthogonal';
 }

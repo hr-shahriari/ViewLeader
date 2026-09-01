@@ -64,11 +64,11 @@ const DOCUMENT_JSON_BOUNDS: JsonBounds = Object.freeze({
  *
  * Unknown *fields* are always preserved either way. This is only about whole annotations.
  */
-export type DocumentDiagnose = (diagnostic: Diagnostic) => void;
+type DocumentDiagnose = (diagnostic: Diagnostic) => void;
 
 type Mutable<Value> = { -readonly [Key in keyof Value]: Value[Key] };
 
-export type DocumentCommitKind = 'mutation' | 'undo' | 'redo' | 'replacement';
+type DocumentCommitKind = 'mutation' | 'undo' | 'redo' | 'replacement';
 
 export interface DocumentCommit {
   readonly kind: DocumentCommitKind;
@@ -82,11 +82,11 @@ interface HistoryEntry {
   readonly after: ViewLeaderDocument;
 }
 
-export interface DocumentEngineOptions {
+interface DocumentEngineOptions {
   readonly historyCapacity?: number;
 }
 
-export interface DocumentEditResult<Result> {
+interface DocumentEditResult<Result> {
   readonly document: ViewLeaderDocument;
   readonly result: Result;
 }

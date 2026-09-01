@@ -153,7 +153,7 @@ interface PrimitiveBase {
   }>;
 }
 
-export interface RenderTextPrimitive extends PrimitiveBase {
+interface RenderTextPrimitive extends PrimitiveBase {
   readonly kind: 'text';
   readonly position: Vec2;
   readonly text: string;
@@ -179,7 +179,7 @@ export interface RenderPathPrimitive extends PrimitiveBase {
   }>;
 }
 
-export interface RenderImagePrimitive extends PrimitiveBase {
+interface RenderImagePrimitive extends PrimitiveBase {
   readonly kind: 'image';
   readonly reference: string;
   readonly alt: string;
@@ -205,7 +205,7 @@ export interface RenderableContentLayout {
   readonly direction: TextDirection;
 }
 
-export interface PlannedLeg {
+interface PlannedLeg {
   readonly id: string;
   /** The leader line's final path on screen, once labels have been placed. */
   readonly points: readonly Vec2[];

@@ -8,9 +8,9 @@ import type { HostImageContent } from './types.js';
 // Annotations reference images by name — a photo, a detail drawing — and the host turns that name
 // into something drawable. That takes time, so drawing a frame never blocks on it: a label shows a
 // placeholder box at the right size, and the frame is redrawn once the picture arrives.
-export type ImageDiagnostic = AdapterError;
+type ImageDiagnostic = AdapterError;
 
-export interface ImageRuntimeHooks {
+interface ImageRuntimeHooks {
   readonly invalidate: () => void;
   readonly diagnostic: (diagnostic: ImageDiagnostic) => void;
 }

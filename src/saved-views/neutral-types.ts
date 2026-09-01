@@ -87,7 +87,7 @@ export interface NeutralViewerState {
   readonly clippingPlanes: readonly NeutralClippingPlane[];
 }
 
-export interface SavedViewAnnotationPlacement {
+interface SavedViewAnnotationPlacement {
   readonly mode: 'automatic' | 'manual';
   readonly position?: Vec2;
 }

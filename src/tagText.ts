@@ -26,7 +26,7 @@ interface PendingTag {
   readonly owners: Set<string>;
 }
 
-export interface TagTextHooks {
+interface TagTextHooks {
   readonly invalidate: () => void;
   readonly diagnostic: (diagnostic: Diagnostic) => void;
 }

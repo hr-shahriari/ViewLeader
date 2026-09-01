@@ -59,7 +59,7 @@ export interface OcclusionResult {
   readonly occludedLegIds?: readonly string[];
 }
 
-export interface OcclusionBatchRequest {
+interface OcclusionBatchRequest {
   readonly candidates: readonly OcclusionCandidate[];
   readonly signal: AbortSignal;
 }
@@ -68,7 +68,7 @@ export interface HostOcclusionPort {
   resolveBatch(request: OcclusionBatchRequest): Promise<readonly OcclusionResult[]>;
 }
 
-export interface OcclusionRuntimeHooks {
+interface OcclusionRuntimeHooks {
   readonly invalidate: () => void;
   readonly diagnostic: (diagnostic: AdapterError) => void;
 }

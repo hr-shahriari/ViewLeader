@@ -20,7 +20,7 @@ import {
   normalizeSavedViewDefinition,
 } from './neutral-validation.js';
 
-export interface SavedViewCoordinatorOptions<Prepared, AnnotationSnapshot> {
+interface SavedViewCoordinatorOptions<Prepared, AnnotationSnapshot> {
   readonly document: SavedViewDocumentPort;
   readonly viewerState: ViewerStateAdapter<Prepared>;
   readonly annotationViews: AnnotationViewAdapter<AnnotationSnapshot>;

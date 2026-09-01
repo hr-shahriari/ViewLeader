@@ -11,7 +11,7 @@
  */
 import type { Rect, Vec2 } from './types.js';
 
-export interface Segment {
+interface Segment {
   readonly start: Vec2;
   readonly end: Vec2;
 }

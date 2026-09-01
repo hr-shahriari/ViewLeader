@@ -203,7 +203,7 @@ function assertMarkdownCharacterBound(source: string): void {
   }
 }
 
-export function validateMarkdownSource(source: string): void {
+function validateMarkdownSource(source: string): void {
   assertMarkdownCharacterBound(source);
   const normalized = source.replace(/\r\n?/gu, '\n');
   const matched = UNSUPPORTED_MARKDOWN_SYNTAX.filter(({ pattern }) => pattern.test(normalized));

@@ -60,7 +60,7 @@ export interface ImagePrimitive extends BasePrimitive {
   readonly alt: string;
 }
 
-export type ContentPrimitive = TextPrimitive | PathPrimitive | ImagePrimitive;
+type ContentPrimitive = TextPrimitive | PathPrimitive | ImagePrimitive;
 
 export interface ContentBounds {
   readonly x: number;
@@ -76,7 +76,7 @@ export interface BuiltInContentLayout {
   readonly direction: TextDirection;
 }
 
-export interface ContentLayoutOptions {
+interface ContentLayoutOptions {
   readonly fontFamily?: string;
   /** Space between the text and the box around it. */
   readonly padding?: number;

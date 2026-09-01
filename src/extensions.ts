@@ -130,7 +130,7 @@ const PLUGIN_JSON_BOUNDS: JsonBounds = Object.freeze({
   maxKeyLength: 256,
 });
 
-export interface PluginResolutionDiagnostic {
+interface PluginResolutionDiagnostic {
   readonly code: 'PLUGIN_MISSING' | 'PLUGIN_MIGRATION_MISSING' | 'PLUGIN_CONTENT_DEGRADED';
   readonly pluginId: string;
   readonly recordType: string;
@@ -138,19 +138,19 @@ export interface PluginResolutionDiagnostic {
   readonly message: string;
 }
 
-export interface ResolvedPluginRecord {
+interface ResolvedPluginRecord {
   readonly envelope: PluginEnvelope;
   readonly data: JsonValue;
   readonly descriptor: PluginDescriptor;
 }
 
-export interface ExtensionResolution {
+interface ExtensionResolution {
   readonly resolved: readonly ResolvedPluginRecord[];
   readonly unresolved: readonly PluginEnvelope[];
   readonly diagnostics: readonly PluginResolutionDiagnostic[];
 }
 
-export interface ExtensionRuntimeOptions {
+interface ExtensionRuntimeOptions {
   readonly invalidate?: () => void;
 }
 

@@ -184,7 +184,7 @@ export interface LayoutStrategies {
   readonly snap?: (proposed: Vec2, ctx: SnapContext) => Vec2;
 }
 
-export interface RuntimeOptions {
+interface RuntimeOptions {
   readonly boundary: Element;
   readonly adapters: HostAdapterBundle;
   readonly document: DocumentEngine;

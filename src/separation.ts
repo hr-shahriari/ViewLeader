@@ -16,7 +16,7 @@
  */
 import type { ViewportInsets } from './labelPlacer.js';
 
-export interface SeparableLabel {
+interface SeparableLabel {
   readonly id: string;
   readonly x: number;
   readonly y: number;
@@ -30,7 +30,7 @@ export interface SeparableLabel {
   readonly immovable?: boolean;
 }
 
-export interface SeparationOptions {
+interface SeparationOptions {
   readonly viewport: Readonly<{ width: number; height: number }>;
   readonly insets?: ViewportInsets;
 }

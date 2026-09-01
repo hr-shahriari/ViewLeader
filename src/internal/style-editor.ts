@@ -49,7 +49,7 @@ export interface StyleFieldState<Value> extends SelectionValue<Value> {
 }
 
 /** Absent for a field neither the style nor any override sets — there is nothing to show. */
-export type StyleFieldStates = {
+type StyleFieldStates = {
   readonly [Key in keyof StyleOverride]: StyleFieldState<NonNullable<StyleOverride[Key]>>;
 };
 

@@ -24,7 +24,7 @@ export interface ViewportInsets {
 
 export type ConnectionEdge = 'left' | 'right' | 'top' | 'bottom';
 
-export interface PlacementResult {
+interface PlacementResult {
   annotationId: string;
   position: Vec2;
   sector: LabelSector;

@@ -134,7 +134,7 @@ export interface HandleFollowSink {
  * `GeometryCapability`: a test can fake it without a viewer, and the capabilities not named here
  * cannot be reached from this file by accident. A `ViewLeader` satisfies it structurally.
  */
-export interface HandlesHost {
+interface HandlesHost {
   readonly geometry: FollowGeometrySource;
   readonly editing: HandleEditingPort;
   /** Only `subscribe` is used — the set changes when the document does, and the snapshot's contents
@@ -142,7 +142,7 @@ export interface HandlesHost {
   readonly annotations: { subscribe(listener: () => void): () => void };
 }
 
-export interface HandlesControllerOptions {
+interface HandlesControllerOptions {
   readonly host: HandlesHost;
   /** The viewer element. Pointer events are normalized against its bounding rect, exactly as core
    *  does — a `ViewLeader` does not publish the boundary it was built with, so it is passed in. */

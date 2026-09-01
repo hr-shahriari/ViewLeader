@@ -132,7 +132,7 @@ export interface TextEditorFollow {
   register(target: FollowTarget, element: Element, options?: FollowOptions): () => void;
 }
 
-export interface TextEditorOptions {
+interface TextEditorOptions {
   readonly host: TextEditorHost;
   /** Optional: without it the field still works, it just does not track the label. */
   readonly follow?: TextEditorFollow;
@@ -151,7 +151,7 @@ export interface OpenTextEditorOptions {
 }
 
 /** Enough of a change event for React's synthetic one and the DOM's own to both satisfy it. */
-export interface TextInputEventLike {
+interface TextInputEventLike {
   readonly target: unknown;
 }
 
@@ -161,7 +161,7 @@ export interface KeyEventLike {
   preventDefault(): void;
 }
 
-export interface DoubleClickEventLike {
+interface DoubleClickEventLike {
   readonly clientX: number;
   readonly clientY: number;
   readonly currentTarget: unknown;

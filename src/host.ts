@@ -206,7 +206,7 @@ interface ResolutionRequest {
   readonly controller: AbortController;
 }
 
-export interface ResolvedLeg {
+interface ResolvedLeg {
   readonly status: 'resolved' | 'unresolved';
   readonly worldPoint: Vec3;
 }

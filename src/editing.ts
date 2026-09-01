@@ -52,7 +52,7 @@ import { revisionCache } from './internal/snapshot-cache.js';
  * Without it, an unsteady hand selecting a label would pin it in place — and a pinned label stops
  * being arranged automatically from then on, which is a lasting change nobody asked for.
  */
-export const DRAG_THRESHOLD_PX = 3;
+const DRAG_THRESHOLD_PX = 3;
 
 /** How near the pointer has to be to a leader line to grab it. About a comfortable line width. */
 const LEADER_HIT_TOLERANCE_PX = 6;
@@ -133,7 +133,7 @@ export interface EditingOptions {
   readonly marquee?: 'empty-space' | 'modifier' | 'none';
 }
 
-export interface EditingControllerOptions {
+interface EditingControllerOptions {
   readonly boundary: Element;
   readonly document: DocumentEngine;
   readonly runtime: ViewLeaderRuntime;

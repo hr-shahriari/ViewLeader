@@ -26,7 +26,7 @@ export interface PlacementInput {
   readonly locked?: boolean;
 }
 
-export interface RoutedLeg {
+interface RoutedLeg {
   readonly id: string;
   readonly points: readonly Vec2[];
 }
@@ -85,7 +85,7 @@ export function routeLegs(
   });
 }
 
-export interface RouteOptions {
+interface RouteOptions {
   /** Other annotations' labels that this one's leader lines must route around rather than through. */
   readonly obstacles?: readonly ScreenBounds[];
 }
