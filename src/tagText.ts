@@ -1,5 +1,11 @@
 import { AdapterError } from './errors.js';
-import type { Diagnostic, TagTextAdapter, TagTextInvalidation } from './host.js';
+import {
+  compositeKey,
+  splitCompositeKey,
+  type Diagnostic,
+  type TagTextAdapter,
+  type TagTextInvalidation,
+} from './host.js';
 import type { BuiltInContent, TagReference, Unsubscribe } from './types.js';
 
 /**
@@ -215,19 +221,12 @@ export class TagTextResolutionManager {
   }
 }
 
-/**
- * Combines the three parts of a reference into one lookup key.
- *
- * Joined with a null character, which documents are not allowed to contain, so the key always
- * splits back into exactly the same three parts — a model id containing a slash or a colon cannot
- * be mistaken for a separator.
- */
 function referenceKey(reference: TagReference): string {
-  return `${reference.modelId}\u0000${reference.elementId}\u0000${reference.property}`;
+  return compositeKey(reference.modelId, reference.elementId, reference.property);
 }
 
 function matches(key: string, invalidation: TagTextInvalidation): boolean {
-  const [modelId, elementId, property] = key.split('\u0000');
+  const [modelId, elementId, property] = splitCompositeKey(key);
   return (invalidation.modelId === undefined || invalidation.modelId === modelId)
     && (invalidation.elementId === undefined || invalidation.elementId === elementId)
     && (invalidation.property === undefined || invalidation.property === property);

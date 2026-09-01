@@ -39,7 +39,6 @@ import type { Diagnostic, HostAdapterBundle, ViewportSnapshot } from './host.js'
 import { HostIntegration } from './host.js';
 import {
   ImageResolutionManager,
-  imagePortFromAdapter,
   type ImageFrameState,
 } from './images.js';
 import {
@@ -410,18 +409,15 @@ export class ViewLeaderRuntime {
         () => this.invalidate(),
         (diagnostic) => this.#publishDiagnostic(diagnostic),
       );
-      images = new ImageResolutionManager(
-        options.adapters.images === undefined ? undefined : imagePortFromAdapter(options.adapters.images),
-        {
-          invalidate: () => this.invalidate(),
-          diagnostic: (error) => this.#publishDiagnostic({
-            code: 'IMAGE_RESOLUTION_FAILED',
-            severity: 'warning',
-            message: error.message,
-            error,
-          }),
-        },
-      );
+      images = new ImageResolutionManager(options.adapters.images, {
+        invalidate: () => this.invalidate(),
+        diagnostic: (error) => this.#publishDiagnostic({
+          code: 'IMAGE_RESOLUTION_FAILED',
+          severity: 'warning',
+          message: error.message,
+          error,
+        }),
+      });
       tagText = new TagTextResolutionManager(options.adapters.tagText, {
         invalidate: () => this.invalidate(),
         diagnostic: (diagnostic) => this.#publishDiagnostic(diagnostic),

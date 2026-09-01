@@ -1,6 +1,6 @@
 import { DEFAULT_IMAGE_HEIGHT, DEFAULT_IMAGE_WIDTH } from './content.js';
 import { AdapterError, domainError, InvalidInputError } from './errors.js';
-import type { HostImageAdapter } from './host.js';
+import type { HostImageAdapter, ResolvedHostImage } from './host.js';
 import type { HostImageContent } from './types.js';
 
 // Loads the images that annotations point at, without ever making a frame wait for one.
@@ -8,29 +8,6 @@ import type { HostImageContent } from './types.js';
 // Annotations reference images by name — a photo, a detail drawing — and the host turns that name
 // into something drawable. That takes time, so drawing a frame never blocks on it: a label shows a
 // placeholder box at the right size, and the frame is redrawn once the picture arrives.
-export interface HostImageResolveRequest {
-  readonly reference: string;
-  readonly signal: AbortSignal;
-}
-
-export interface HostResolvedImage {
-  /** Something the browser can draw — a URL or a data URI. Owned by the host and never saved into
-   *  the document, so a stale link cannot outlive the session that made it. */
-  readonly source: string;
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface HostImagePort {
-  resolve(request: HostImageResolveRequest): Promise<HostResolvedImage>;
-}
-
-export function imagePortFromAdapter(adapter: HostImageAdapter): HostImagePort {
-  return {
-    resolve: async ({ reference, signal }) => adapter.resolve(reference, signal),
-  };
-}
-
 export type ImageDiagnostic = AdapterError;
 
 export interface ImageRuntimeHooks {
@@ -66,10 +43,6 @@ interface PendingImage {
   readonly generation: number;
 }
 
-interface FailedImage {
-  readonly failed: true;
-}
-
 /**
  * Keeps track of which images are loading, loaded, or failed.
  *
@@ -78,17 +51,17 @@ interface FailedImage {
  * asked for when one finishes.
  */
 export class ImageResolutionManager {
-  readonly #port: HostImagePort | undefined;
+  readonly #adapter: HostImageAdapter | undefined;
   readonly #hooks: ImageRuntimeHooks;
-  readonly #resolved = new Map<string, HostResolvedImage>();
-  readonly #failed = new Map<string, FailedImage>();
+  readonly #resolved = new Map<string, ResolvedHostImage>();
+  readonly #failed = new Set<string>();
   readonly #pending = new Map<string, PendingImage>();
   readonly #ownerReferences = new Map<string, string>();
   #generation = 0;
   #disposed = false;
 
-  public constructor(port: HostImagePort | undefined, hooks: ImageRuntimeHooks) {
-    this.#port = port;
+  public constructor(adapter: HostImageAdapter | undefined, hooks: ImageRuntimeHooks) {
+    this.#adapter = adapter;
     this.#hooks = hooks;
   }
 
@@ -157,7 +130,8 @@ export class ImageResolutionManager {
   }
 
   #request(reference: string, ownerId: string): void {
-    if (this.#port === undefined || this.#pending.has(reference)) {
+    const adapter = this.#adapter;
+    if (adapter === undefined || this.#pending.has(reference)) {
       this.#pending.get(reference)?.owners.add(ownerId);
       return;
     }
@@ -165,7 +139,10 @@ export class ImageResolutionManager {
     const generation = this.#generation;
     const pending: PendingImage = { controller, generation, owners: new Set([ownerId]) };
     this.#pending.set(reference, pending);
-    void this.#port.resolve({ reference, signal: controller.signal }).then(
+    // Wrapped so a host that throws synchronously fails this image, not the frame being drawn.
+    void new Promise<ResolvedHostImage>((resolve) => {
+      resolve(adapter.resolve(reference, controller.signal));
+    }).then(
       (image) => {
         if (!this.#isCurrent(reference, pending) || controller.signal.aborted) return;
         try {
@@ -195,7 +172,7 @@ export class ImageResolutionManager {
   #fail(reference: string, pending: PendingImage, cause: unknown): void {
     if (!this.#isCurrent(reference, pending) || pending.controller.signal.aborted) return;
     this.#pending.delete(reference);
-    this.#failed.set(reference, { failed: true });
+    this.#failed.add(reference);
     this.#hooks.diagnostic(new AdapterError('image resolution', cause, { reference }));
     this.#hooks.invalidate();
   }
@@ -230,7 +207,7 @@ export function validateHostImageContent(content: HostImageContent): void {
   }
 }
 
-function validateResolvedImage(image: HostResolvedImage): void {
+function validateResolvedImage(image: ResolvedHostImage): void {
   if (image === null || typeof image !== 'object'
     || typeof image.source !== 'string' || image.source.length === 0
     || !Number.isFinite(image.width) || !Number.isFinite(image.height)

@@ -39,9 +39,10 @@ describe('keynotes: metadata convention + query helper', () => {
   it('natural-sorts real NCS UDS-7 keys instead of lexicographically, and pairs each with its annotations', () => {
     // Real NCS-shaped keys, deliberately out of order, covering: a bare category with no keynote
     // suffix at all, a bare-digit suffix next to a lettered one, a deeper sub-segment ('A1.2') that
-    // gives its sibling an unequal run count, and leading zeros ('A09' vs 'A9') next to the
-    // headline case the ticket names ('A3' before 'A10' — the pair a lexicographic sort gets
-    // backwards, since 'A10' < 'A3' when compared as plain strings).
+    // gives its sibling an unequal run count, and leading zeros ('A09' vs 'A9' — the same number,
+    // ordered by plain string as a convention) next to the headline case the ticket names ('A3'
+    // before 'A10' — the pair a lexicographic sort gets backwards, since 'A10' < 'A3' when
+    // compared as plain strings).
     const root = boundary();
     const leader = new ViewLeader({ boundary: root, adapters: adapters() });
     leader.annotations.create(note('n-a10', '09 91 23.A10'));
@@ -62,8 +63,8 @@ describe('keynotes: metadata convention + query helper', () => {
       '09 91 23.A1',
       '09 91 23.A1.2',
       '09 91 23.A3',
-      '09 91 23.A9',
       '09 91 23.A09',
+      '09 91 23.A9',
       '09 91 23.A10',
     ]);
 

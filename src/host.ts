@@ -53,7 +53,6 @@ export interface ElementResolveRequest {
 
 export interface ElementResolution {
   readonly worldPoint: Vec3;
-  readonly localId?: string | number;
 }
 
 export interface ElementInvalidation {
@@ -177,8 +176,6 @@ export interface ModelBoundsAdapter {
   get(): ModelBounds | null;
 }
 
-export type NeutralViewerStateAdapter = ViewerStateAdapter;
-
 export interface HostAdapterBundle {
   readonly projection: ProjectionAdapter;
   readonly elements?: ElementResolutionAdapter;
@@ -189,7 +186,7 @@ export interface HostAdapterBundle {
   readonly images?: HostImageAdapter;
   readonly occlusion?: OcclusionAdapter;
   readonly modelBounds?: ModelBoundsAdapter;
-  readonly viewerState?: NeutralViewerStateAdapter;
+  readonly viewerState?: ViewerStateAdapter;
 }
 
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'fatal';
@@ -313,7 +310,7 @@ export class HostIntegration {
     for (const annotation of document.annotations) {
       for (const leg of annotation.anchors) {
         if (leg.anchor.kind !== 'element') continue;
-        expected.set(requestId(annotation.id, leg.id), { annotation, leg });
+        expected.set(compositeKey(annotation.id, leg.id), { annotation, leg });
       }
     }
     for (const [id, request] of this.#requests) {
@@ -342,10 +339,6 @@ export class HostIntegration {
     return cached === undefined
       ? Object.freeze({ status: 'unresolved', worldPoint: anchor.fallbackPoint })
       : Object.freeze({ status: 'resolved', worldPoint: cached.worldPoint });
-  }
-
-  public invalidateElements(invalidation: ElementInvalidation = {}): void {
-    this.#invalidateElements(invalidation);
   }
 
   public dispose(): void {
@@ -388,10 +381,7 @@ export class HostIntegration {
         });
       }
       this.#requests.delete(id);
-      this.#cache.set(key, Object.freeze({
-        worldPoint: Object.freeze({ ...resolution.worldPoint }),
-        ...(resolution.localId === undefined ? {} : { localId: resolution.localId }),
-      }));
+      this.#cache.set(key, Object.freeze({ worldPoint: Object.freeze({ ...resolution.worldPoint }) }));
       this.#invalidate();
     }).catch((cause: unknown) => {
       if (!this.#isCurrent(id, key, token) || isAbortError(cause)) return;
@@ -418,7 +408,7 @@ export class HostIntegration {
     if (this.#disposed) return false;
     const current = this.#requests.get(id);
     if (current?.key !== key || current.token !== token || current.controller.signal.aborted) return false;
-    const [annotationId, legId] = splitRequestId(id);
+    const [annotationId, legId] = splitCompositeKey(id);
     const annotation = this.#document?.annotations.find(({ id: candidate }) => candidate === annotationId);
     const leg = annotation?.anchors.find(({ id: candidate }) => candidate === legId);
     return leg?.anchor.kind === 'element' && elementKey(leg.anchor) === key;
@@ -427,14 +417,14 @@ export class HostIntegration {
   #invalidateElements(invalidation: ElementInvalidation): void {
     if (this.#disposed) return;
     for (const key of [...this.#cache.keys()]) {
-      const [modelId, elementId] = splitElementKey(key);
+      const [modelId, elementId] = splitCompositeKey(key);
       if (
         (invalidation.modelId === undefined || invalidation.modelId === modelId) &&
         (invalidation.elementId === undefined || invalidation.elementId === elementId)
       ) this.#cache.delete(key);
     }
     for (const [id, request] of this.#requests) {
-      const [modelId, elementId] = splitElementKey(request.key);
+      const [modelId, elementId] = splitCompositeKey(request.key);
       if (
         (invalidation.modelId === undefined || invalidation.modelId === modelId) &&
         (invalidation.elementId === undefined || invalidation.elementId === elementId)
@@ -453,22 +443,21 @@ export class HostIntegration {
   }
 }
 
+/**
+ * Joins id parts into one lookup key with a null character, which documents are not allowed to
+ * contain, so the key always splits back into exactly the parts it was built from — an id with a
+ * slash or a colon in it cannot be mistaken for a separator.
+ */
+export function compositeKey(...parts: readonly string[]): string {
+  return parts.join('\u0000');
+}
+
+export function splitCompositeKey(key: string): readonly string[] {
+  return key.split('\u0000');
+}
+
 function elementKey(anchor: Extract<Anchor, { kind: 'element' }>): string {
-  return `${anchor.modelId}\u0000${anchor.elementId}`;
-}
-
-function splitElementKey(key: string): readonly [string, string] {
-  const separator = key.indexOf('\u0000');
-  return [key.slice(0, separator), key.slice(separator + 1)];
-}
-
-function requestId(annotationId: string, legId: string): string {
-  return `${annotationId}\u0000${legId}`;
-}
-
-function splitRequestId(id: string): readonly [string, string] {
-  const separator = id.indexOf('\u0000');
-  return [id.slice(0, separator), id.slice(separator + 1)];
+  return compositeKey(anchor.modelId, anchor.elementId);
 }
 
 function isFiniteVec3(value: Vec3): boolean {

@@ -13,7 +13,6 @@ import {
   DuplicateIdError,
   InvalidDocumentError,
   InvalidInputError,
-  InvariantViolationError,
   NotFoundError,
 } from './errors.js';
 import type { Diagnostic } from './host.js';
@@ -38,18 +37,13 @@ import type {
 } from './types.js';
 import { inkFromJson, multiLeaderFromCore, regionAnchorFromCore } from './markup.js';
 import { validateHostImageContent } from './images.js';
+import { assertJson, type JsonBounds, type JsonFailure } from './internal/json.js';
 
-export interface DocumentLimits {
-  readonly maxBytes: number;
-  readonly maxAnnotations: number;
-  readonly maxTextLength: number;
-  readonly maxMetadataEntries: number;
-  readonly maxPluginEnvelopes: number;
-  readonly maxJsonDepth: number;
-  readonly maxArrayLength: number;
-}
-
-export const DEFAULT_DOCUMENT_LIMITS: DocumentLimits = Object.freeze({
+/**
+ * How big a document may get. Generous for a real drawing — five thousand annotations is a dense
+ * sheet — and tight enough that a corrupt or hostile file cannot exhaust memory while loading.
+ */
+const DOCUMENT_LIMITS = Object.freeze({
   maxBytes: 10 * 1024 * 1024,
   maxAnnotations: 5_000,
   maxTextLength: 65_536,
@@ -57,6 +51,13 @@ export const DEFAULT_DOCUMENT_LIMITS: DocumentLimits = Object.freeze({
   maxPluginEnvelopes: 1_000,
   maxJsonDepth: 16,
   maxArrayLength: 20_000,
+});
+
+/** Per-value JSON bounds. Node and string counts are left to the byte limit. */
+const DOCUMENT_JSON_BOUNDS: JsonBounds = Object.freeze({
+  maxDepth: DOCUMENT_LIMITS.maxJsonDepth,
+  maxArrayLength: DOCUMENT_LIMITS.maxArrayLength,
+  maxKeyLength: 256,
 });
 
 /**
@@ -88,7 +89,6 @@ interface HistoryEntry {
 
 export interface DocumentEngineOptions {
   readonly historyCapacity?: number;
-  readonly limits?: Partial<DocumentLimits>;
 }
 
 export interface DocumentEditResult<Result> {
@@ -110,31 +110,21 @@ export function createEmptyDocument(): ViewLeaderDocument {
   });
 }
 
-export function parseDocument(
-  source: string,
-  limits: Partial<DocumentLimits> = {},
-  diagnose?: DocumentDiagnose,
-): ViewLeaderDocument {
-  const resolved = resolveLimits(limits);
-  assertByteLimit(source, resolved);
+export function parseDocument(source: string, diagnose?: DocumentDiagnose): ViewLeaderDocument {
+  assertByteLimit(source);
   let value: unknown;
   try {
     value = JSON.parse(source) as unknown;
   } catch (cause) {
     throw new InvalidDocumentError('Document is not valid JSON', {}, { cause });
   }
-  return prepareDocument(value, resolved, diagnose);
+  return prepareDocument(value, diagnose);
 }
 
-export function prepareDocument(
-  value: unknown,
-  limits: Partial<DocumentLimits> | DocumentLimits = {},
-  diagnose?: DocumentDiagnose,
-): ViewLeaderDocument {
-  const resolved = isResolvedLimits(limits) ? limits : resolveLimits(limits);
+export function prepareDocument(value: unknown, diagnose?: DocumentDiagnose): ViewLeaderDocument {
   try {
-    const normalized = normalizeDocument(value, resolved, diagnose);
-    assertByteLimit(canonicalStringify(expandDocument(normalized)), resolved);
+    const normalized = normalizeDocument(value, diagnose);
+    assertByteLimit(canonicalStringify(expandDocument(normalized)));
     return freezeDocument(normalized);
   } catch (error) {
     if (error instanceof InvalidDocumentError || error instanceof DocumentTooLargeError) {
@@ -144,13 +134,9 @@ export function prepareDocument(
   }
 }
 
-export function serializeDocument(
-  document: ViewLeaderDocument,
-  limits: Partial<DocumentLimits> = {},
-): string {
-  const prepared = prepareDocument(document, limits);
-  const serialized = canonicalStringify(expandDocument(prepared));
-  assertByteLimit(serialized, resolveLimits(limits));
+export function serializeDocument(document: ViewLeaderDocument): string {
+  const serialized = canonicalStringify(expandDocument(prepareDocument(document)));
+  assertByteLimit(serialized);
   return serialized;
 }
 
@@ -175,7 +161,6 @@ export interface TransactionOptions {
 
 export class DocumentEngine {
   readonly #historyCapacity: number;
-  readonly #limits: DocumentLimits;
   readonly #listeners = new Set<(commit: DocumentCommit) => void>();
   #document = createEmptyDocument();
   #documentRevision = 0;
@@ -203,7 +188,6 @@ export class DocumentEngine {
       });
     }
     this.#historyCapacity = capacity;
-    this.#limits = resolveLimits(options.limits ?? {});
   }
 
   public get document(): ViewLeaderDocument {
@@ -215,15 +199,15 @@ export class DocumentEngine {
   }
 
   public parse(source: string, diagnose?: DocumentDiagnose): ViewLeaderDocument {
-    return parseDocument(source, this.#limits, diagnose);
+    return parseDocument(source, diagnose);
   }
 
   public prepare(value: unknown, diagnose?: DocumentDiagnose): ViewLeaderDocument {
-    return prepareDocument(value, this.#limits, diagnose);
+    return prepareDocument(value, diagnose);
   }
 
   public serialize(): string {
-    return serializeDocument(this.#document, this.#limits);
+    return serializeDocument(this.#document);
   }
 
   public subscribe(listener: (commit: DocumentCommit) => void): () => void {
@@ -243,7 +227,7 @@ export class DocumentEngine {
   }
 
   public create(draft: AnnotationDraft, label = 'Create annotation'): Annotation {
-    const annotation = deepFreeze(normalizeAnnotationDraft(draft, this.#nextId(), this.#limits));
+    const annotation = deepFreeze(normalizeAnnotationDraft(draft, this.#nextId()));
     return this.edit(label, (document) => {
       if (document.annotations.some(({ id }) => id === annotation.id)) {
         throw new DuplicateIdError(annotation.id);
@@ -261,7 +245,7 @@ export class DocumentEngine {
       const index = document.annotations.findIndex((annotation) => annotation.id === id);
       const current = document.annotations[index];
       if (current === undefined) throw new NotFoundError('annotation', id);
-      const updated = deepFreeze(applyAnnotationPatch(current, patch, this.#limits));
+      const updated = deepFreeze(applyAnnotationPatch(current, patch));
       if (canonicalStringify(current) === canonicalStringify(updated)) {
         return { document, result: current };
       }
@@ -389,8 +373,8 @@ export class DocumentEngine {
   ): ViewLeaderDocument {
     this.#assertOutsideTransaction('replace the document');
     const prepared = typeof value === 'string'
-      ? parseDocument(value, this.#limits, diagnose)
-      : prepareDocument(value, this.#limits, diagnose);
+      ? parseDocument(value, diagnose)
+      : prepareDocument(value, diagnose);
     this.#undo = [];
     this.#redo = [];
     this.#undoHeadIsLastCommit = false;
@@ -400,7 +384,7 @@ export class DocumentEngine {
 
   #finishTransaction(): void {
     const before = this.#document;
-    const after = prepareDocument(this.#activeDocument(), this.#limits);
+    const after = prepareDocument(this.#activeDocument());
     const label = this.#transactionLabel ?? 'Transaction';
     const coalesce = this.#transactionCoalesce;
     this.#clearTransaction();
@@ -470,18 +454,7 @@ export class DocumentEngine {
  */
 export const CURRENT_DOCUMENT_VERSION = 2;
 
-/**
- * The upgrade steps, one per old version, each producing the next.
- *
- * Applied one after another, so an old file walks every step up to the present rather than jumping
- * straight to it. A chain that allows jumps is a chain nobody can safely add a step to later.
- */
 type RawDocument = Record<string, unknown>;
-
-const DOCUMENT_MIGRATIONS: ReadonlyMap<number, (input: RawDocument) => RawDocument> = new Map([
-  // Version 1 to 2: `locked` was added, and its absence already means unlocked. Nothing to do.
-  [1, (input: RawDocument): RawDocument => ({ ...input, version: 2 })],
-]);
 
 /**
  * Upgrades a document to the current version.
@@ -507,18 +480,8 @@ function migrateDocument(input: RawDocument): RawDocument {
       { schema: input.schema, version, supported: CURRENT_DOCUMENT_VERSION },
     );
   }
-  let migrated = input;
-  for (let from = version; from < CURRENT_DOCUMENT_VERSION; from += 1) {
-    const step = DOCUMENT_MIGRATIONS.get(from);
-    if (step === undefined) {
-      throw new InvariantViolationError(
-        `No migration from document version ${from}`,
-        { from, to: CURRENT_DOCUMENT_VERSION },
-      );
-    }
-    migrated = step(migrated);
-  }
-  return migrated;
+  // Version 1 to 2: `locked` was added, and its absence already means unlocked. Nothing to do.
+  return version === 1 ? { ...input, version: 2 } : input;
 }
 
 /** The fields this version knows about. Anything else came from a newer one. */
@@ -529,11 +492,7 @@ const DOCUMENT_KEYS: ReadonlySet<string> = new Set([
   'unknownFields',
 ]);
 
-function normalizeDocument(
-  value: unknown,
-  limits: DocumentLimits,
-  diagnose?: DocumentDiagnose,
-): ViewLeaderDocument {
+function normalizeDocument(value: unknown, diagnose?: DocumentDiagnose): ViewLeaderDocument {
   const raw = objectValue(value, 'document');
   // This is not a document at all. Nothing further down can recover from that.
   if (raw.schema !== 'viewleader.document') {
@@ -544,26 +503,22 @@ function normalizeDocument(
   }
   const input = migrateDocument(raw);
   const annotations = arrayValue(input.annotations, 'annotations');
-  if (annotations.length > limits.maxAnnotations) {
+  if (annotations.length > DOCUMENT_LIMITS.maxAnnotations) {
     throw new DocumentTooLargeError('Document has too many annotations', {
       count: annotations.length,
-      limit: limits.maxAnnotations,
+      limit: DOCUMENT_LIMITS.maxAnnotations,
     });
   }
   const normalizedAnnotations: Annotation[] = [];
-  const quarantined = [...normalizeJsonObjectArray(
-    input.quarantined ?? [],
-    limits,
-    'quarantined annotations',
-  )];
+  const quarantined = [...normalizeJsonObjectArray(input.quarantined ?? [], 'quarantined annotations')];
   for (const candidate of annotations) {
     try {
-      const annotation = normalizeAnnotation(candidate, limits);
+      const annotation = normalizeAnnotation(candidate);
       multiLeaderFromCore(annotation);
       normalizedAnnotations.push(annotation);
     } catch (error) {
       if (diagnose === undefined) throw error;
-      quarantineOrSkip(candidate, error, limits, quarantined, diagnose);
+      quarantineOrSkip(candidate, error, quarantined, diagnose);
     }
   }
   const ids = new Set<string>();
@@ -573,33 +528,33 @@ function normalizeDocument(
     ids.add(id);
   }
   const envelopes = arrayValue(input.pluginEnvelopes, 'pluginEnvelopes');
-  if (envelopes.length > limits.maxPluginEnvelopes) {
+  if (envelopes.length > DOCUMENT_LIMITS.maxPluginEnvelopes) {
     throw new DocumentTooLargeError('Document has too many plugin envelopes', {
       count: envelopes.length,
-      limit: limits.maxPluginEnvelopes,
+      limit: DOCUMENT_LIMITS.maxPluginEnvelopes,
     });
   }
   // These get re-ordered, so anything unrecognised is set aside before sorting and matched back
   // up afterwards — otherwise a newer version's field would end up on the wrong record.
   const preparedEnvelopes = envelopes.map((envelope) => {
-    const normalized = normalizePluginEnvelope(envelope, limits);
-    return { normalized, residue: residueOf(envelope, normalized, limits, 'plugin envelope') };
+    const normalized = normalizePluginEnvelope(envelope);
+    return { normalized, residue: residueOf(envelope, normalized, true, 'plugin envelope') };
   }).sort((a, b) => envelopeKey(a.normalized).localeCompare(envelopeKey(b.normalized)));
   const envelopeResidue: Record<string, JsonValue> = {};
   preparedEnvelopes.forEach(({ residue }, index) => {
     if (residue !== undefined) envelopeResidue[String(index)] = residue;
   });
-  const normalizedInk = normalizeJsonObjectArray(input.ink, limits, 'ink');
+  const normalizedInk = normalizeJsonObjectArray(input.ink, 'ink');
   for (const ink of normalizedInk) inkFromJson(ink);
   const document: Mutable<ViewLeaderDocument> = {
     schema: 'viewleader.document',
     version: CURRENT_DOCUMENT_VERSION,
     annotations: normalizedAnnotations.sort((a, b) => a.id.localeCompare(b.id)),
-    metadata: normalizeMetadata(input.metadata, limits, 'document metadata'),
+    metadata: normalizeMetadata(input.metadata, 'document metadata'),
     pluginEnvelopes: preparedEnvelopes.map(({ normalized }) => normalized),
-    definitions: normalizeDefinitions(input.definitions, limits),
-    savedViews: normalizeJsonObjectArray(input.savedViews, limits, 'savedViews'),
-    tours: normalizeJsonObjectArray(input.tours, limits, 'tours'),
+    definitions: normalizeDefinitions(input.definitions),
+    savedViews: normalizeJsonObjectArray(input.savedViews, 'savedViews'),
+    tours: normalizeJsonObjectArray(input.tours, 'tours'),
     ink: normalizedInk,
   };
   if (input.layoutFrame !== undefined && input.layoutFrame !== null) {
@@ -607,8 +562,8 @@ function normalizeDocument(
   }
   const residue = mergeResidue(
     mergeResidue(
-      carriedResidue(input.unknownFields, limits, 'document'),
-      residueOf(input, document, limits, 'document', DOCUMENT_KEYS),
+      carriedResidue(input.unknownFields, 'document'),
+      residueOf(input, document, true, 'document', DOCUMENT_KEYS),
     ),
     Object.keys(envelopeResidue).length === 0 ? undefined : { pluginEnvelopes: envelopeResidue },
   );
@@ -630,7 +585,6 @@ function normalizeDocument(
 function quarantineOrSkip(
   candidate: unknown,
   error: unknown,
-  limits: DocumentLimits,
   quarantined: JsonObject[],
   diagnose: DocumentDiagnose,
 ): void {
@@ -643,7 +597,7 @@ function quarantineOrSkip(
     // There is no point preserving something that is itself broken or unbounded. That is corrupt
     // whoever wrote it, so it is skipped rather than carried.
     try {
-      quarantined.push(normalizeJsonObject(candidate, limits, `annotation ${id}`));
+      quarantined.push(normalizeJsonObject(candidate, `annotation ${id}`));
       diagnose({
         code: 'document.annotation-quarantined',
         severity: 'warning',
@@ -666,7 +620,6 @@ function quarantineOrSkip(
 function normalizeAnnotationDraft(
   draft: AnnotationDraft,
   generatedId: string,
-  limits: DocumentLimits,
 ): Annotation {
   const usesSingle = draft.anchor !== undefined;
   const usesMultiple = draft.anchors !== undefined;
@@ -700,13 +653,12 @@ function normalizeAnnotationDraft(
   if (draft.styleOverride !== undefined) candidate.styleOverride = draft.styleOverride;
   if (draft.occlusion !== undefined) candidate.occlusion = draft.occlusion;
   if (draft.locked !== undefined) candidate.locked = draft.locked;
-  return normalizeAnnotation(candidate, limits);
+  return normalizeAnnotation(candidate);
 }
 
 function applyAnnotationPatch(
   annotation: Annotation,
   patch: AnnotationPatch,
-  limits: DocumentLimits,
 ): Annotation {
   if (patch.anchor !== undefined && patch.anchors !== undefined) {
     throw new InvalidInputError('anchor and anchors cannot be updated together');
@@ -750,10 +702,10 @@ function applyAnnotationPatch(
   else if (patch.occlusion !== undefined) candidate.occlusion = patch.occlusion;
   if (patch.locked === null) delete candidate.locked;
   else if (patch.locked !== undefined) candidate.locked = patch.locked;
-  return normalizeAnnotation(candidate, limits);
+  return normalizeAnnotation(candidate);
 }
 
-function normalizeAnnotation(value: unknown, limits: DocumentLimits): Annotation {
+function normalizeAnnotation(value: unknown): Annotation {
   const input = objectValue(value, 'annotation');
   const id = stringValue(input.id, 'annotation id', 128);
   assertId(id, 'annotation id');
@@ -761,20 +713,20 @@ function normalizeAnnotation(value: unknown, limits: DocumentLimits): Annotation
   if (rawAnchors.length === 0 || rawAnchors.length > 32) {
     throw new InvalidDocumentError('Annotations require between 1 and 32 anchor legs', { id });
   }
-  const normalizedLegs = rawAnchors.map((leg) => normalizeLeg(leg, limits));
+  const normalizedLegs = rawAnchors.map((leg) => normalizeLeg(leg));
   if (new Set(normalizedLegs.map(({ id: legId }) => legId)).size !== normalizedLegs.length) {
     throw new DuplicateIdError(`${id}/anchor-leg`);
   }
   const annotation: Mutable<Annotation> = {
     id,
     anchors: normalizedLegs,
-    content: normalizeContent(input.content, limits),
+    content: normalizeContent(input.content),
     placement: normalizePlacement(input.placement),
-    metadata: normalizeMetadata(input.metadata, limits, `annotation ${id} metadata`),
+    metadata: normalizeMetadata(input.metadata, `annotation ${id} metadata`),
   };
   if (input.styleId !== undefined) annotation.styleId = stringValue(input.styleId, 'styleId', 128);
   if (input.styleOverride !== undefined) {
-    annotation.styleOverride = normalizeJsonObject(input.styleOverride, limits, 'styleOverride');
+    annotation.styleOverride = normalizeJsonObject(input.styleOverride, 'styleOverride');
   }
   if (input.occlusion !== undefined) {
     if (!['keep', 'fade', 'hide'].includes(String(input.occlusion))) {
@@ -791,23 +743,23 @@ function normalizeAnnotation(value: unknown, limits: DocumentLimits): Annotation
     if (input.locked) annotation.locked = true;
   }
   const residue = mergeResidue(
-    carriedResidue(input.unknownFields, limits, `annotation ${id}`),
-    residueOf(input, annotation, limits, `annotation ${id}`, ANNOTATION_KEYS),
+    carriedResidue(input.unknownFields, `annotation ${id}`),
+    residueOf(input, annotation, true, `annotation ${id}`, ANNOTATION_KEYS),
   );
   if (residue !== undefined) annotation.unknownFields = residue;
   return annotation;
 }
 
-function normalizeLeg(value: unknown, limits: DocumentLimits): AnnotationLeg {
+function normalizeLeg(value: unknown): AnnotationLeg {
   const input = objectValue(value, 'annotation leg');
   return {
     id: stringValue(input.id, 'annotation leg id', 128),
-    anchor: normalizeAnchor(input.anchor, limits),
+    anchor: normalizeAnchor(input.anchor),
     routing: normalizeRouting(input.routing),
   };
 }
 
-function normalizeAnchor(value: unknown, limits: DocumentLimits): Anchor {
+function normalizeAnchor(value: unknown): Anchor {
   const input = objectValue(value, 'anchor');
   switch (input.kind) {
     case 'world-point':
@@ -822,7 +774,7 @@ function normalizeAnchor(value: unknown, limits: DocumentLimits): Anchor {
     case 'region': {
       const plane = objectValue(input.plane, 'region plane');
       const vertices = arrayValue(input.vertices, 'region vertices');
-      if (vertices.length < 3 || vertices.length > Math.min(10_000, limits.maxArrayLength)) {
+      if (vertices.length < 3 || vertices.length > Math.min(10_000, DOCUMENT_LIMITS.maxArrayLength)) {
         throw new InvalidDocumentError('Region anchors require between 3 and 10000 vertices');
       }
       const shape = input.shape;
@@ -851,7 +803,7 @@ function normalizeAnchor(value: unknown, limits: DocumentLimits): Anchor {
   }
 }
 
-function normalizeContent(value: unknown, limits: DocumentLimits): AnnotationContent {
+function normalizeContent(value: unknown): AnnotationContent {
   const input = objectValue(value, 'content');
   const common = (): { direction?: 'auto' | 'ltr' | 'rtl'; maxWidth?: number } => {
     const result: { direction?: 'auto' | 'ltr' | 'rtl'; maxWidth?: number } = {};
@@ -864,7 +816,7 @@ function normalizeContent(value: unknown, limits: DocumentLimits): AnnotationCon
     if (input.maxWidth !== undefined) result.maxWidth = positiveNumber(input.maxWidth, 'maxWidth');
     return result;
   };
-  const text = (key: string): string => stringValue(input[key], key, limits.maxTextLength);
+  const text = (key: string): string => stringValue(input[key], key, DOCUMENT_LIMITS.maxTextLength);
   switch (input.kind) {
     case 'plain-note':
       return { kind: 'plain-note', text: text('text'), ...common() };
@@ -902,7 +854,7 @@ function normalizeContent(value: unknown, limits: DocumentLimits): AnnotationCon
       const content = {
         kind: 'host-image',
         reference: stringValue(input.reference, 'image reference', 2048),
-        alt: stringValue(input.alt, 'image alt', limits.maxTextLength),
+        alt: stringValue(input.alt, 'image alt', DOCUMENT_LIMITS.maxTextLength),
         ...(input.width === undefined ? {} : { width: positiveNumber(input.width, 'image width') }),
         ...(input.height === undefined ? {} : { height: positiveNumber(input.height, 'image height') }),
       } as const;
@@ -921,7 +873,7 @@ function normalizeContent(value: unknown, limits: DocumentLimits): AnnotationCon
         kind: input.kind as `plugin:${string}`,
         pluginId,
         schemaVersion: positiveInteger(input.schemaVersion, 'plugin schemaVersion'),
-        data: normalizeJson(input.data, limits, 'plugin content data'),
+        data: normalizeJson(input.data, 'plugin content data'),
       };
     }
   }
@@ -978,33 +930,33 @@ function normalizeRouting(value: unknown): AnnotationRouting {
   throw unknownKind('routing', input.kind);
 }
 
-function normalizeDefinitions(value: unknown, limits: DocumentLimits): DefinitionCollections {
+function normalizeDefinitions(value: unknown): DefinitionCollections {
   const input = objectValue(value, 'definitions');
   return {
-    styles: normalizeJsonObjectArray(input.styles, limits, 'definition styles'),
-    templates: normalizeJsonObjectArray(input.templates, limits, 'definition templates'),
-    terminators: normalizeJsonObjectArray(input.terminators, limits, 'definition terminators'),
-    enclosures: normalizeJsonObjectArray(input.enclosures, limits, 'definition enclosures'),
+    styles: normalizeJsonObjectArray(input.styles, 'definition styles'),
+    templates: normalizeJsonObjectArray(input.templates, 'definition templates'),
+    terminators: normalizeJsonObjectArray(input.terminators, 'definition terminators'),
+    enclosures: normalizeJsonObjectArray(input.enclosures, 'definition enclosures'),
   };
 }
 
-function normalizePluginEnvelope(value: unknown, limits: DocumentLimits): PluginEnvelope {
+function normalizePluginEnvelope(value: unknown): PluginEnvelope {
   const input = objectValue(value, 'plugin envelope');
   return {
     pluginId: stringValue(input.pluginId, 'pluginId', 128),
     recordType: stringValue(input.recordType, 'plugin recordType', 128),
     schemaVersion: positiveInteger(input.schemaVersion, 'plugin schemaVersion'),
-    data: normalizeJson(input.data, limits, 'plugin envelope data'),
+    data: normalizeJson(input.data, 'plugin envelope data'),
   };
 }
 
-function normalizeMetadata(value: unknown, limits: DocumentLimits, label: string): NamespacedMetadata {
+function normalizeMetadata(value: unknown, label: string): NamespacedMetadata {
   const input = objectValue(value, label);
   const entries = Object.entries(input);
-  if (entries.length > limits.maxMetadataEntries) {
+  if (entries.length > DOCUMENT_LIMITS.maxMetadataEntries) {
     throw new DocumentTooLargeError(`${label} has too many entries`, {
       count: entries.length,
-      limit: limits.maxMetadataEntries,
+      limit: DOCUMENT_LIMITS.maxMetadataEntries,
     });
   }
   const result: Record<string, JsonValue> = {};
@@ -1012,54 +964,40 @@ function normalizeMetadata(value: unknown, limits: DocumentLimits, label: string
     if (!/^[a-z][a-z0-9.-]*(?::|\/)[A-Za-z0-9._-]+$/u.test(key)) {
       throw new InvalidDocumentError(`${label} key must be namespaced`, { key });
     }
-    result[key] = normalizeJson(item, limits, `${label}.${key}`);
+    result[key] = normalizeJson(item, `${label}.${key}`);
   }
   return result;
 }
 
-function normalizeJsonObjectArray(
-  value: unknown,
-  limits: DocumentLimits,
-  label: string,
-): readonly JsonObject[] {
+function normalizeJsonObjectArray(value: unknown, label: string): readonly JsonObject[] {
   const values = arrayValue(value, label);
-  if (values.length > limits.maxArrayLength) {
+  if (values.length > DOCUMENT_LIMITS.maxArrayLength) {
     throw new DocumentTooLargeError(`${label} has too many entries`);
   }
-  return values.map((item, index) => normalizeJsonObject(item, limits, `${label}[${index}]`));
+  return values.map((item, index) => normalizeJsonObject(item, `${label}[${index}]`));
 }
 
-function normalizeJsonObject(value: unknown, limits: DocumentLimits, label: string): JsonObject {
-  const normalized = normalizeJson(value, limits, label);
+function normalizeJsonObject(value: unknown, label: string): JsonObject {
+  const normalized = normalizeJson(value, label);
   if (normalized === null || Array.isArray(normalized) || typeof normalized !== 'object') {
     throw new InvalidDocumentError(`${label} must be a JSON object`);
   }
   return normalized as JsonObject;
 }
 
-function normalizeJson(
-  value: unknown,
-  limits: DocumentLimits,
-  label: string,
-  depth = 0,
-): JsonValue {
-  if (depth > limits.maxJsonDepth) throw new DocumentTooLargeError(`${label} is too deeply nested`);
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new InvalidDocumentError(`${label} contains a non-finite number`);
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (value.length > limits.maxArrayLength) throw new DocumentTooLargeError(`${label} array is too large`);
-    return value.map((item) => normalizeJson(item, limits, label, depth + 1));
-  }
-  const object = objectValue(value, label);
-  const result: Record<string, JsonValue> = {};
-  for (const key of Object.keys(object).sort()) {
-    if (key.length > 256) throw new DocumentTooLargeError(`${label} contains an oversized key`);
-    result[key] = normalizeJson(object[key], limits, `${label}.${key}`, depth + 1);
-  }
-  return result;
+function normalizeJson(value: unknown, label: string): JsonValue {
+  assertJson(value, label, DOCUMENT_JSON_BOUNDS, documentJsonError);
+  return sortJson(value) as JsonValue;
+}
+
+function documentJsonError(
+  failure: JsonFailure,
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): Error {
+  return failure === 'bounds'
+    ? new DocumentTooLargeError(message, details)
+    : new InvalidDocumentError(message, details);
 }
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
@@ -1172,7 +1110,7 @@ const ANNOTATION_KEYS: ReadonlySet<string> = new Set(['unknownFields']);
 export function residueOf(
   input: unknown,
   output: unknown,
-  limits: DocumentLimits | undefined,
+  normalize: boolean | undefined,
   label: string,
   owned?: ReadonlySet<string>,
 ): JsonObject | undefined {
@@ -1180,7 +1118,7 @@ export function residueOf(
     if (!Array.isArray(output) || !alignedArray(input, output)) return undefined;
     const items: Record<string, JsonValue> = {};
     input.forEach((item, index) => {
-      const nested = residueOf(item, output[index], limits, `${label}[${index}]`);
+      const nested = residueOf(item, output[index], normalize, `${label}[${index}]`);
       if (nested !== undefined) items[String(index)] = nested;
     });
     return Object.keys(items).length === 0 ? undefined : items;
@@ -1190,12 +1128,12 @@ export function residueOf(
   for (const [key, value] of Object.entries(input)) {
     if (owned?.has(key) === true) continue;
     if (!Object.hasOwn(output, key)) {
-      result[key] = limits === undefined
-        ? value as JsonValue
-        : normalizeJson(value, limits, `${label}.${key}`);
+      result[key] = normalize === true
+        ? normalizeJson(value, `${label}.${key}`)
+        : value as JsonValue;
       continue;
     }
-    const nested = residueOf(value, output[key], limits, `${label}.${key}`);
+    const nested = residueOf(value, output[key], normalize, `${label}.${key}`);
     if (nested !== undefined) result[key] = nested;
   }
   return Object.keys(result).length === 0 ? undefined : result;
@@ -1244,14 +1182,8 @@ export function applyResidue(value: unknown, residue: unknown): unknown {
 }
 
 /** Residue already extracted by an earlier pass, so re-normalizing in memory does not re-wrap it. */
-function carriedResidue(
-  value: unknown,
-  limits: DocumentLimits,
-  label: string,
-): JsonObject | undefined {
-  return value === undefined
-    ? undefined
-    : normalizeJsonObject(value, limits, `${label} unknownFields`);
+function carriedResidue(value: unknown, label: string): JsonObject | undefined {
+  return value === undefined ? undefined : normalizeJsonObject(value, `${label} unknownFields`);
 }
 
 function mergeResidue(
@@ -1378,29 +1310,12 @@ function emptyDefinitions(): DefinitionCollections {
   return { styles: [], templates: [], terminators: [], enclosures: [] };
 }
 
-function resolveLimits(overrides: Partial<DocumentLimits>): DocumentLimits {
-  const result = { ...DEFAULT_DOCUMENT_LIMITS, ...overrides };
-  for (const [key, value] of Object.entries(result)) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new InvalidInputError(`Document limit ${key} must be a positive integer`, { [key]: value });
-    }
-  }
-  if (result.maxAnnotations < 5_000 && overrides.maxAnnotations === undefined) {
-    throw new InvalidInputError('The shipped annotation limit must support at least 5000 annotations');
-  }
-  return Object.freeze(result);
-}
-
-function isResolvedLimits(value: Partial<DocumentLimits> | DocumentLimits): value is DocumentLimits {
-  return Object.keys(DEFAULT_DOCUMENT_LIMITS).every((key) => key in value);
-}
-
-function assertByteLimit(source: string, limits: DocumentLimits): void {
+function assertByteLimit(source: string): void {
   const bytes = new TextEncoder().encode(source).byteLength;
-  if (bytes > limits.maxBytes) {
-    throw new DocumentTooLargeError('Document exceeds the configured byte limit', {
+  if (bytes > DOCUMENT_LIMITS.maxBytes) {
+    throw new DocumentTooLargeError('Document exceeds the byte limit', {
       bytes,
-      limit: limits.maxBytes,
+      limit: DOCUMENT_LIMITS.maxBytes,
     });
   }
 }

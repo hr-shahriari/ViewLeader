@@ -405,7 +405,7 @@ function mergeDefaults(
   };
 }
 
-/** The same four fields `applyTemplateToAnnotation` writes, as a patch. */
+/** The four fields a template supplies, as a patch. */
 function templatePatch(defaults: TemplateDefaults): AnnotationPatch {
   return {
     ...(defaults.content === undefined ? {} : { content: defaults.content }),

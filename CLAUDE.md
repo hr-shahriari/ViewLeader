@@ -58,8 +58,8 @@ and is the *only* place allowed to name Three; the boundary test enforces that.
 - [src/runtime.ts](src/runtime.ts) — `ViewLeaderRuntime`, the frame loop and the owner of transient
   state (selection, hover, previews, layout frame, placement/routing mode, annotation scale).
 - [src/document.ts](src/document.ts) — `DocumentEngine`: the persisted document, validation against
-  `DocumentLimits`, transactions and undo/redo. `edit()` opens an implicit transaction; nested
-  `edit()` calls collapse into the enclosing one so a compound operation is one undo step.
+  the shipped document limits, transactions and undo/redo. `edit()` opens an implicit transaction;
+  nested `edit()` calls collapse into the enclosing one so a compound operation is one undo step.
 
 ### The frame pipeline
 
