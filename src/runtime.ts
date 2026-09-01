@@ -100,7 +100,6 @@ import {
   type ConnectionEdge,
   type LabelSector,
   type PlacementMode,
-  type RoutingHint,
   type ViewportInsets,
 } from './labelPlacer.js';
 import { separateLabels } from './separation.js';
@@ -250,7 +249,7 @@ function anchorCloudFrame(inputs: readonly PlacementInput[]): Bounds2 {
   return { min: { x: minX - padX, y: minY - padY }, max: { x: maxX + padX, y: maxY + padY } };
 }
 
-const PLACEMENT_MODES: readonly PlacementMode[] = ['sides', 'rows', 'auto', 'perimeter'];
+const PLACEMENT_MODES: readonly PlacementMode[] = ['sides', 'rows', 'auto'];
 
 /**
  * How many annotations count as a crowded drawing, for automatic leader shaping.
@@ -281,7 +280,6 @@ export class ViewLeaderRuntime {
   readonly #selected = new Set<string>();
   readonly #cleanup: Unsubscribe[] = [];
   readonly #window: Window | null;
-  readonly #previousPlacement = new Map<string, ScreenBounds>();
   readonly #labelPlacer = new LabelPlacer();
   readonly #boundaryMemory = new BoundaryMemory();
   readonly #previousSectors = new Map<string, LabelSector>();
@@ -299,8 +297,6 @@ export class ViewLeaderRuntime {
   #runtimeRevision = 0;
   #renderInvalidated = true;
   #lastProjectionRevision: string | number | undefined;
-  #selfDriven = false;
-  #animationFrame: number | undefined;
   #immediatePending = false;
   #documentConnected = false;
   #disposed = false;
@@ -354,7 +350,6 @@ export class ViewLeaderRuntime {
    */
   readonly #placerHints = new Map<string, {
     readonly connectionEdge: ConnectionEdge;
-    readonly routingHint: RoutingHint;
     readonly overflowElbow?: Vec2;
   }>();
   /** Where a label is being dragged to. Held here rather than in the document, so a drag costs one
@@ -1100,7 +1095,6 @@ export class ViewLeaderRuntime {
       // own target.
       this.#placerHints.set(result.annotationId, {
         connectionEdge: result.connectionEdge,
-        routingHint: result.routingHint,
         ...(result.overflowElbow === undefined ? {} : { overflowElbow: result.overflowElbow }),
       });
     }
@@ -1117,9 +1111,8 @@ export class ViewLeaderRuntime {
    * moves, because the drop is stored relative to its anchor. Deliberate: re-snapping every frame
    * would let the label jump between grid cells while the user is only orbiting. Revisit if a host
    * with a real grid asks for it.
-   * Mutates `placement` in place and also returns it, so the snapped bounds are what `update()` both
-   * routes legs from and remembers in `#previousPlacement` — hysteresis must remember the snapped
-   * point, or a snapping host would see the label swim between the raw and the snapped position.
+   * Mutates `placement` in place and also returns it, so the snapped bounds are what `update()`
+   * routes legs from.
    */
   #applyLayoutSnap(
     placement: Map<string, ScreenBounds>,
@@ -1203,7 +1196,6 @@ export class ViewLeaderRuntime {
     this.#layoutMemoryRevision = revision;
     const live = new Set(this.#document.document.annotations.map((annotation) => annotation.id));
     for (const id of this.#previousSectors.keys()) if (!live.has(id)) this.#previousSectors.delete(id);
-    for (const id of this.#previousPlacement.keys()) if (!live.has(id)) this.#previousPlacement.delete(id);
   }
 
   public publishTransientChange(render = false): void { this.#publishRuntimeChange(render); }
@@ -1381,7 +1373,6 @@ export class ViewLeaderRuntime {
     );
     this.#separate(byPlacement, placementInputs, viewportBounds);
     this.#applyLayoutSnap(byPlacement, placementInputs);
-    for (const [id, bounds] of byPlacement) this.#previousPlacement.set(id, bounds);
     this.#forgetDeletedAnnotations();
 
     // Every other label is something the leaders must route around. Built once for the whole frame
@@ -1473,26 +1464,10 @@ export class ViewLeaderRuntime {
     emitFrame(this);
   }
 
-  public start(): void {
-    if (this.#selfDriven) return;
-    this.#selfDriven = true;
-    this.#scheduleFrame();
-  }
-
-  public stop(): void {
-    if (!this.#selfDriven) return;
-    this.#selfDriven = false;
-    if (this.#animationFrame !== undefined && this.#window !== null) {
-      this.#window.cancelAnimationFrame(this.#animationFrame);
-      this.#animationFrame = undefined;
-    }
-  }
-
   public dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     const cleanupErrors = runCleanupSteps([
-      () => this.stop(),
       ...this.#cleanup.splice(0).map((cleanup) => () => cleanup()),
       () => this.#tagText.dispose(),
       () => this.#images.dispose(),
@@ -1512,7 +1487,6 @@ export class ViewLeaderRuntime {
     this.#inkPreview = undefined;
     this.#selectedInk.clear();
     this.#lastInk = Object.freeze([]);
-    this.#previousPlacement.clear();
     this.#anchorOrigins.clear();
     this.#layoutCache.clear();
     this.#imageOwners.clear();
@@ -1672,26 +1646,12 @@ export class ViewLeaderRuntime {
     if (primitive.kind === 'path') return {
       ...base, kind: 'path', commands: primitive.commands, fill: primitive.fill,
     };
-    if (primitive.kind === 'image') {
-      imageOwners.add(ownerId);
-      const state = this.#images.read(ownerId, {
-        kind: 'host-image', reference: primitive.reference, alt: primitive.alt,
-        width: primitive.bounds.width, height: primitive.bounds.height,
-      });
-      return { ...base, kind: 'image', reference: primitive.reference, alt: primitive.alt, state };
-    }
-    if (primitive.kind === 'group') return {
-      ...base,
-      kind: 'group',
-      children: primitive.children.map((child, index) =>
-        this.#normalizePluginPrimitive(child, `${ownerId}:${index}`, imageOwners)),
-    };
-    return {
-      ...base,
-      kind: 'hit-region',
-      interactionId: primitive.interactionId,
-      ...(primitive.cursor === undefined ? {} : { cursor: primitive.cursor }),
-    };
+    imageOwners.add(ownerId);
+    const state = this.#images.read(ownerId, {
+      kind: 'host-image', reference: primitive.reference, alt: primitive.alt,
+      width: primitive.bounds.width, height: primitive.bounds.height,
+    });
+    return { ...base, kind: 'image', reference: primitive.reference, alt: primitive.alt, state };
   }
 
   #planInk(viewport: ViewportSnapshot): readonly PlannedInk[] {
@@ -1790,16 +1750,6 @@ export class ViewLeaderRuntime {
     queueMicrotask(() => {
       this.#immediatePending = false;
       if (!this.#disposed) this.update();
-    });
-  }
-
-  #scheduleFrame(): void {
-    if (!this.#selfDriven || this.#animationFrame !== undefined || this.#window === null) return;
-    this.#animationFrame = this.#window.requestAnimationFrame(() => {
-      this.#animationFrame = undefined;
-      if (!this.#selfDriven || this.#disposed) return;
-      this.update();
-      this.#scheduleFrame();
     });
   }
 }
@@ -2038,10 +1988,7 @@ function unionBounds(bounds: readonly ContentBounds[]): ContentBounds | undefine
 }
 
 function primitiveLabels(primitives: readonly DeclarativePrimitive[]): readonly string[] {
-  return primitives.flatMap((primitive): string[] => [
-    primitive.accessibility.label,
-    ...(primitive.kind === 'group' ? primitiveLabels(primitive.children) : []),
-  ]);
+  return primitives.map((primitive) => primitive.accessibility.label);
 }
 
 function isFiniteVec2(value: unknown): value is Vec2 {

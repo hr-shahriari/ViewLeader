@@ -49,23 +49,10 @@ export interface ImagePrimitive extends PrimitiveBase {
   readonly alt: string;
 }
 
-export interface GroupPrimitive extends PrimitiveBase {
-  readonly kind: 'group';
-  readonly children: readonly DeclarativePrimitive[];
-}
-
-export interface HitRegionPrimitive extends PrimitiveBase {
-  readonly kind: 'hit-region';
-  readonly interactionId: string;
-  readonly cursor?: 'default' | 'pointer' | 'text' | 'move' | 'crosshair';
-}
-
 export type DeclarativePrimitive =
   | TextPrimitive
   | PathPrimitive
-  | ImagePrimitive
-  | GroupPrimitive
-  | HitRegionPrimitive;
+  | ImagePrimitive;
 
 export interface PluginMigration {
   readonly from: number;
@@ -126,7 +113,6 @@ export interface ExtensionLimits {
   readonly maximumDepth: number;
   readonly maximumNodes: number;
   readonly maximumPrimitives: number;
-  readonly maximumGroupDepth: number;
   readonly maximumPathCommands: number;
 }
 
@@ -136,7 +122,6 @@ export const DEFAULT_EXTENSION_LIMITS: ExtensionLimits = Object.freeze({
   maximumDepth: 24,
   maximumNodes: 8_192,
   maximumPrimitives: 2_048,
-  maximumGroupDepth: 16,
   maximumPathCommands: 1_024,
 });
 
@@ -521,12 +506,7 @@ export function validatePrimitives(
   if (!Array.isArray(primitives) || primitives.length > limits.maximumPrimitives) {
     throw domainError('INVALID_PLUGIN', 'Plugin primitive list exceeds its bound');
   }
-  let count = 0;
-  const visit = (primitive: DeclarativePrimitive, depth: number): void => {
-    count += 1;
-    if (count > limits.maximumPrimitives || depth > limits.maximumGroupDepth) {
-      throw domainError('INVALID_PLUGIN', 'Plugin primitive tree exceeds its bounds');
-    }
+  for (const primitive of primitives) {
     validatePrimitiveBase(primitive);
     switch (primitive.kind) {
       case 'text':
@@ -539,7 +519,7 @@ export function validatePrimitives(
           || primitive.fontSize <= 0 || primitive.fontSize > 1_000) {
           throw domainError('INVALID_PLUGIN', 'Text primitive is invalid');
         }
-        return;
+        break;
       case 'path':
         assertExactKeys(primitive, [
           'kind', 'bounds', 'zIndex', 'accessibility', 'commands', 'fill',
@@ -553,7 +533,7 @@ export function validatePrimitives(
         if (primitive.fill !== 'none' && primitive.fill !== 'solid') {
           throw domainError('INVALID_PLUGIN', 'Path primitive fill is invalid');
         }
-        return;
+        break;
       case 'image':
         assertExactKeys(primitive, [
           'kind', 'bounds', 'zIndex', 'accessibility', 'reference', 'alt',
@@ -563,25 +543,11 @@ export function validatePrimitives(
           || primitive.alt.length > limits.maximumStringLength) {
           throw domainError('INVALID_PLUGIN', 'Image primitive requires an opaque reference and alt text');
         }
-        return;
-      case 'group':
-        assertExactKeys(primitive, [
-          'kind', 'bounds', 'zIndex', 'accessibility', 'children',
-        ], 'group primitive');
-        if (!Array.isArray(primitive.children)) throw domainError('INVALID_PLUGIN', 'Group children must be an array');
-        for (const child of primitive.children) visit(child, depth + 1);
-        return;
-      case 'hit-region':
-        assertExactKeys(primitive, [
-          'kind', 'bounds', 'zIndex', 'accessibility', 'interactionId', 'cursor',
-        ], 'hit-region primitive');
-        validateStableId(primitive.interactionId, 'primitive interaction id');
-        return;
+        break;
       default:
         throw domainError('INVALID_PLUGIN', 'Unknown plugin primitive kind');
     }
-  };
-  for (const primitive of primitives) visit(primitive, 0);
+  }
 }
 
 function migrateEnvelope(

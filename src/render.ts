@@ -192,18 +192,11 @@ export interface RenderGroupPrimitive extends PrimitiveBase {
   readonly scale?: number;
 }
 
-export interface RenderHitRegionPrimitive extends PrimitiveBase {
-  readonly kind: 'hit-region';
-  readonly interactionId: string;
-  readonly cursor?: 'default' | 'pointer' | 'text' | 'move' | 'crosshair';
-}
-
 export type RenderPrimitive =
   | RenderTextPrimitive
   | RenderPathPrimitive
   | RenderImagePrimitive
-  | RenderGroupPrimitive
-  | RenderHitRegionPrimitive;
+  | RenderGroupPrimitive;
 
 export interface RenderableContentLayout {
   readonly bounds: ContentBounds;
@@ -1131,25 +1124,29 @@ export class SvgOverlay {
     group.style.pointerEvents = 'none';
     const handles = annotationScreenGeometry([entry], entry.annotation.id)?.routeHandles ?? [];
     for (const handle of handles) {
-      const grip = document.createElementNS(SVG_NS, 'rect');
+      const grip = this.#gripRect(handle.at, handle.kind === 'vertex', entry.style);
       grip.setAttribute('data-route-handle', handle.kind);
       grip.dataset.legId = handle.target;
       grip.dataset.handleIndex = String(handle.index);
-      grip.setAttribute('x', format(handle.at.x - GRIP_SIZE / 2));
-      grip.setAttribute('y', format(handle.at.y - GRIP_SIZE / 2));
-      grip.setAttribute('width', format(GRIP_SIZE));
-      grip.setAttribute('height', format(GRIP_SIZE));
-      grip.setAttribute('fill', 'none');
-      grip.setAttribute('stroke', entry.style.lineColor);
-      grip.setAttribute('stroke-width', format(entry.style.lineWidth));
-      grip.setAttribute('vector-effect', 'non-scaling-stroke');
-      if (handle.kind === 'vertex') {
-        grip.setAttribute('transform', `rotate(45 ${format(handle.at.x)} ${format(handle.at.y)})`);
-      }
       group.appendChild(grip);
     }
     group.style.display = this.#selected.has(entry.annotation.id) ? '' : 'none';
     return group;
+  }
+
+  /** A grip: a hollow square, or the same square turned 45° into the "move this point" diamond. */
+  #gripRect(at: Vec2, diamond: boolean, style: RenderStyle): SVGRectElement {
+    const grip = this.#boundary.ownerDocument.createElementNS(SVG_NS, 'rect');
+    grip.setAttribute('x', format(at.x - GRIP_SIZE / 2));
+    grip.setAttribute('y', format(at.y - GRIP_SIZE / 2));
+    grip.setAttribute('width', format(GRIP_SIZE));
+    grip.setAttribute('height', format(GRIP_SIZE));
+    grip.setAttribute('fill', 'none');
+    grip.setAttribute('stroke', style.lineColor);
+    grip.setAttribute('stroke-width', format(style.lineWidth));
+    grip.setAttribute('vector-effect', 'non-scaling-stroke');
+    if (diamond) grip.setAttribute('transform', `rotate(45 ${format(at.x)} ${format(at.y)})`);
+    return grip;
   }
 
   /**
@@ -1170,31 +1167,20 @@ export class SvgOverlay {
     group.style.pointerEvents = 'none';
     const handles = annotationScreenGeometry([entry], entry.annotation.id)?.regionHandles ?? [];
     for (const handle of handles) {
-      const grip = handle.kind === 'extent'
-        ? document.createElementNS(SVG_NS, 'circle')
-        : document.createElementNS(SVG_NS, 'rect');
-      grip.setAttribute('data-region-handle', handle.kind);
-      grip.dataset.legId = handle.target;
+      let grip: SVGCircleElement | SVGRectElement;
       if (handle.kind === 'extent') {
+        grip = document.createElementNS(SVG_NS, 'circle');
         grip.setAttribute('cx', format(handle.at.x));
         grip.setAttribute('cy', format(handle.at.y));
         grip.setAttribute('r', format(GRIP_SIZE / 2));
         grip.setAttribute('fill', entry.style.lineColor);
         grip.setAttribute('stroke', 'none');
       } else {
+        grip = this.#gripRect(handle.at, handle.kind === 'vertex', entry.style);
         grip.dataset.handleIndex = String(handle.index);
-        grip.setAttribute('x', format(handle.at.x - GRIP_SIZE / 2));
-        grip.setAttribute('y', format(handle.at.y - GRIP_SIZE / 2));
-        grip.setAttribute('width', format(GRIP_SIZE));
-        grip.setAttribute('height', format(GRIP_SIZE));
-        grip.setAttribute('fill', 'none');
-        grip.setAttribute('stroke', entry.style.lineColor);
-        grip.setAttribute('stroke-width', format(entry.style.lineWidth));
-        grip.setAttribute('vector-effect', 'non-scaling-stroke');
-        if (handle.kind === 'vertex') {
-          grip.setAttribute('transform', `rotate(45 ${format(handle.at.x)} ${format(handle.at.y)})`);
-        }
       }
+      grip.setAttribute('data-region-handle', handle.kind);
+      grip.dataset.legId = handle.target;
       group.appendChild(grip);
     }
     group.style.display = this.#selected.has(entry.annotation.id) ? '' : 'none';
@@ -1209,17 +1195,8 @@ export class SvgOverlay {
     group.setAttribute('data-non-printing', '');
     group.style.pointerEvents = 'none';
     entry.points.forEach((point, index) => {
-      const grip = document.createElementNS(SVG_NS, 'rect');
+      const grip = this.#gripRect(point, true, entry.style);
       grip.setAttribute('data-ink-handle', String(index));
-      grip.setAttribute('x', format(point.x - GRIP_SIZE / 2));
-      grip.setAttribute('y', format(point.y - GRIP_SIZE / 2));
-      grip.setAttribute('width', format(GRIP_SIZE));
-      grip.setAttribute('height', format(GRIP_SIZE));
-      grip.setAttribute('fill', 'none');
-      grip.setAttribute('stroke', entry.style.lineColor);
-      grip.setAttribute('stroke-width', format(entry.style.lineWidth));
-      grip.setAttribute('vector-effect', 'non-scaling-stroke');
-      grip.setAttribute('transform', `rotate(45 ${format(point.x)} ${format(point.y)})`);
       group.appendChild(grip);
     });
     group.style.display = this.#selectedInk.has(entry.id) ? '' : 'none';
@@ -1385,21 +1362,6 @@ export class SvgOverlay {
       }
       return group;
     }
-    if (primitive.kind === 'hit-region') {
-      const hit = document.createElementNS(SVG_NS, 'rect');
-      hit.setAttribute('x', format(primitive.bounds.x));
-      hit.setAttribute('y', format(primitive.bounds.y));
-      hit.setAttribute('width', format(primitive.bounds.width));
-      hit.setAttribute('height', format(primitive.bounds.height));
-      hit.setAttribute('fill', 'transparent');
-      hit.setAttribute('data-plugin-interaction-id', primitive.interactionId);
-      hit.setAttribute('data-non-printing', '');
-      hit.style.pointerEvents = 'all';
-      if (primitive.cursor !== undefined) hit.style.cursor = primitive.cursor;
-      applyAccessibility(hit, primitive.accessibility);
-      this.#wireHitTarget(hit, annotationId);
-      return hit;
-    }
     const element = document.createElementNS(SVG_NS, 'path');
     const paint = primitive.paint;
     element.setAttribute('d', primitive.path ?? commandPath(primitive.commands ?? []));
@@ -1475,39 +1437,18 @@ function annotationStructureSignature(entry: PlannedAnnotation): string {
 
 const layoutPrimitiveSignatures = new WeakMap<RenderableContentLayout, string>();
 
+/** Primitives are plain frozen data, so their JSON is their identity. */
 function layoutPrimitiveSignature(layout: RenderableContentLayout): string {
   const cached = layoutPrimitiveSignatures.get(layout);
   if (cached !== undefined) return cached;
-  const signature = JSON.stringify(layout.primitives.map(primitiveSignature));
+  const signature = JSON.stringify(layout.primitives);
   layoutPrimitiveSignatures.set(layout, signature);
   return signature;
 }
 
-function primitiveSignature(primitive: RenderPrimitive): unknown {
-  const base = [primitive.kind, primitive.bounds, primitive.zIndex, primitive.accessibility];
-  switch (primitive.kind) {
-    case 'text':
-      return [...base, primitive.position, primitive.text, primitive.direction,
-        primitive.fontSize, primitive.bold, primitive.italic, primitive.code];
-    case 'path':
-      return [...base, primitive.path, primitive.commands, primitive.fill, primitive.paint];
-    case 'image':
-      return [...base, primitive.reference, primitive.alt, primitive.state.status,
-        primitive.state.bounds,
-        ...(primitive.state.status === 'ready'
-          ? [primitive.state.intrinsic, primitive.state.source]
-          : [])];
-    case 'group':
-      return [...base, primitive.scale, primitive.children.map(primitiveSignature)];
-    case 'hit-region':
-      return [...base, primitive.interactionId, primitive.cursor];
-  }
-}
-
+/** Stacking order, ties kept in authored order — `sort` has been stable since ES2019. */
 function sortedPrimitives(primitives: readonly RenderPrimitive[]): readonly RenderPrimitive[] {
-  return primitives.map((primitive, index) => ({ primitive, index }))
-    .sort((left, right) => left.primitive.zIndex - right.primitive.zIndex || left.index - right.index)
-    .map(({ primitive }) => primitive);
+  return [...primitives].sort((left, right) => left.zIndex - right.zIndex);
 }
 
 function setStroke(element: SVGPathElement, style: RenderStyle): void {
@@ -1589,7 +1530,7 @@ function terminatorTransform(points: readonly Vec2[], end: 'anchor' | 'label'): 
  * tip. The arrowhead itself still uses the full-length points, so its point stays exactly on the
  * thing being annotated.
  */
-export function clearAnchorHead(points: readonly Vec2[], style: RenderStyle): readonly Vec2[] {
+function clearAnchorHead(points: readonly Vec2[], style: RenderStyle): readonly Vec2[] {
   const head = style.terminator;
   const [tip, next] = points;
   if (head?.fill !== 'filled' || tip === undefined || next === undefined) return points;
@@ -1691,6 +1632,3 @@ export function defaultRenderStyle(theme: Theme = CAD_PAPER): RenderStyle {
     fontSize: DEFAULT_FONT_SIZE,
   });
 }
-
-/** The same fallback in the default light scheme, for callers with no instance to ask. */
-export const DEFAULT_RENDER_STYLE: RenderStyle = defaultRenderStyle();

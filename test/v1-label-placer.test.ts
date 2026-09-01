@@ -49,7 +49,7 @@ describe('v1 LabelPlacer — labels railed OUTSIDE the frame', () => {
     // halfHeight = 50; each slot needs ~28px, so a fourth top-left label cannot fit → overflow.
     const anchors = [0, 1, 2, 3].map((i) => ({ id: `n${i}`, screenPos: { x: 320, y: 255 + i } }));
     const results = new LabelPlacer().computePlacements(anchors, boundary, viewport);
-    const overflow = results.filter((r) => r.routingHint === 'overflow');
+    const overflow = results.filter((r) => r.overflow);
     expect(overflow.length).toBeGreaterThan(0);
     for (const o of overflow) expect(o.overflowElbow).toBeDefined();
   });

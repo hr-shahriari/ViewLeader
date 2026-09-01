@@ -131,7 +131,6 @@ export class OcclusionManager {
     policies: ReadonlyMap<string, OcclusionPolicy>,
   ): readonly OcclusionPresentation[] {
     this.#assertActive();
-    validateCandidates(candidates);
     const signature = batchSignature(candidates);
     if (this.#port !== undefined && this.#completed?.signature !== signature) {
       this.#request(signature, candidates);
@@ -163,16 +162,7 @@ export class OcclusionManager {
     const controller = new AbortController();
     const pending: PendingBatch = { signature, controller, generation: this.#generation };
     this.#pending = pending;
-    const ownedCandidates = candidates.map((candidate) => ({
-      id: candidate.id,
-      routes: candidate.routes.map((route) => route.map((point) => ({ ...point }))),
-      ...(candidate.samples === undefined ? {} : {
-        samples: candidate.samples.map((sample) => ({
-          legId: sample.legId,
-          worldPoint: { ...sample.worldPoint },
-        })),
-      }),
-    }));
+    const ownedCandidates = structuredClone(candidates);
     void this.#port.resolveBatch({ candidates: ownedCandidates, signal: controller.signal }).then(
       (results) => {
         if (!this.#isCurrent(pending)) return;
@@ -223,7 +213,7 @@ export class OcclusionManager {
   }
 }
 
-export function applyOcclusionPolicy(
+function applyOcclusionPolicy(
   id: string,
   policy: OcclusionPolicy,
   occluded: boolean,
@@ -239,36 +229,6 @@ export function applyOcclusionPolicy(
   if (!occluded || policy === 'keep') return { id, visible: true, opacity: 1, ...legs };
   if (policy === 'fade') return { id, visible: true, opacity: 0.25, ...legs };
   return { id, visible: false, opacity: 0 };
-}
-
-function validateCandidates(candidates: readonly OcclusionCandidate[]): void {
-  if (!Array.isArray(candidates) || candidates.length > 10_000) {
-    throw new InvalidInputError('Occlusion batch exceeds the supported size');
-  }
-  const ids = new Set<string>();
-  for (const candidate of candidates) {
-    if (typeof candidate.id !== 'string' || candidate.id.length === 0 || ids.has(candidate.id)) {
-      throw new InvalidInputError('Occlusion candidates require unique non-empty ids', {
-        id: candidate.id,
-      });
-    }
-    ids.add(candidate.id);
-    if (!Array.isArray(candidate.routes) || candidate.routes.length === 0 || candidate.routes.length > 64) {
-      throw new InvalidInputError('Occlusion candidates require 1–64 final routes');
-    }
-    for (const route of candidate.routes) {
-      if (!Array.isArray(route) || route.length < 2 || route.length > 128
-        || route.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
-        throw new InvalidInputError('Occlusion route geometry is invalid', { id: candidate.id });
-      }
-    }
-    for (const sample of candidate.samples ?? []) {
-      if (typeof sample.legId !== 'string' || sample.legId.length === 0
-        || ![sample.worldPoint.x, sample.worldPoint.y, sample.worldPoint.z].every(Number.isFinite)) {
-        throw new InvalidInputError('Occlusion world sample is invalid', { id: candidate.id });
-      }
-    }
-  }
 }
 
 function validateResults(
@@ -295,24 +255,19 @@ function validateResults(
   return normalized;
 }
 
-/** Whether two sets of answers agree, and therefore whether redrawing could change anything. */
+/**
+ * Whether two sets of answers agree, and therefore whether redrawing could change anything.
+ *
+ * Leg ids are compared in order, not as a set: they are always produced in the annotation's own
+ * order, so a difference in order is a real difference in the answer.
+ */
 function sameResults(
   left: ReadonlyMap<string, OcclusionResult>,
   right: ReadonlyMap<string, OcclusionResult>,
 ): boolean {
-  if (left.size !== right.size) return false;
-  for (const [id, result] of left) {
-    const other = right.get(id);
-    if (other === undefined || other.occluded !== result.occluded) return false;
-    // Order is compared, not just membership. Leg ids are always produced in the annotation's own
-    // order, so two identical answers always arrive identically ordered — which makes a difference
-    // in order a real difference in the answer.
-    const before = result.occludedLegIds ?? [];
-    const after = other.occludedLegIds ?? [];
-    if (before.length !== after.length) return false;
-    if (before.some((legId, index) => legId !== after[index])) return false;
-  }
-  return true;
+  const canonical = (results: ReadonlyMap<string, OcclusionResult>): string =>
+    JSON.stringify([...results].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return canonical(left) === canonical(right);
 }
 
 function batchSignature(candidates: readonly OcclusionCandidate[]): string {

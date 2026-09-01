@@ -11,15 +11,10 @@ import type { Vec2 } from './types.js';
 
 export type LabelSector = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 /**
- * How labels are arranged around the model.
- *
- * `sides` uses the left and right margins, `rows` the top and bottom, and `perimeter` all four at
- * once. The first two therefore only ever have about half the available edge to work with, which is
- * not enough for a busy drawing — on a typical viewport two columns offer barely more space than a
- * crowded scene demands, so labels have nowhere to go and every adjustment simply moves the problem.
- * `perimeter` roughly doubles the room.
+ * How labels are arranged around the model: `sides` uses the left and right margins, `rows` the top
+ * and bottom, and `auto` picks rows for a model clearly wider than it is tall.
  */
-export type PlacementMode = 'sides' | 'rows' | 'auto' | 'perimeter';
+export type PlacementMode = 'sides' | 'rows' | 'auto';
 export interface ViewportInsets {
   readonly top: number;
   readonly right: number;
@@ -27,7 +22,6 @@ export interface ViewportInsets {
   readonly left: number;
 }
 
-export type RoutingHint = 'direct' | 'diagonal' | 'overflow';
 export type ConnectionEdge = 'left' | 'right' | 'top' | 'bottom';
 
 export interface PlacementResult {
@@ -35,14 +29,14 @@ export interface PlacementResult {
   position: Vec2;
   sector: LabelSector;
   connectionEdge: ConnectionEdge;
-  routingHint: RoutingHint;
+  /** Pushed out past the end of its column or row, so its leader takes the L-shaped detour. */
+  overflow: boolean;
   overflowElbow?: Vec2;
 }
 
 interface InternalAnchor {
   id: string;
   screenPos: Vec2;
-  angle: number;
 }
 
 /** Whether two lines genuinely cross. Merely touching at their ends does not count. */
@@ -136,10 +130,9 @@ export class LabelPlacer {
       anchorYById.set(a.id, a.screenPos.y);
       const dx = a.screenPos.x - cx;
       const dy = a.screenPos.y - cy;
-      const angle = Math.atan2(dy, dx);
       // Reluctant switching, so labels near the middle do not flip edges as the camera turns.
       const sector = stickySector(dx, dy, prevSectors?.get(a.id));
-      buckets.get(sector)!.push({ id: a.id, screenPos: a.screenPos, angle });
+      buckets.get(sector)!.push({ id: a.id, screenPos: a.screenPos });
     }
 
     const dim = (id: string) =>
@@ -161,7 +154,7 @@ export class LabelPlacer {
         for (const sector of sectors) {
           const items = buckets.get(sector)!;
           if (items.length === 0) continue;
-          const placed = placeBandQuadrant(sector, items, boundary, labelDims);
+          const placed = placeBandQuadrant(sector, items, boundary, dim);
           primary.push(...placed.primary);
           if (placed.overflow.length > 0) overflowGroups.push(placed.overflow);
         }
@@ -169,7 +162,7 @@ export class LabelPlacer {
 
         // Same no-crossing rule as the columns, turned sideways: within a row, labels must be
         // ordered left to right the same way the things they point at are.
-        reassignSlotsByAnchorOrderX(primary, anchorXById, dim);
+        reassignSlotsByAnchorOrderX(primary, anchorXById);
 
         // The two halves of a row fill towards each other, so they can meet in the middle. This
         // has to be sorted out here rather than left to the separation pass, because that pass
@@ -188,8 +181,6 @@ export class LabelPlacer {
       return results;
     }
 
-    if (mode === 'perimeter') return placePerimeter(buckets, boundary, viewportSize, insets, dim, anchors);
-
     for (const side of ['left', 'right'] as const) {
       const sectors: LabelSector[] = side === 'left'
         ? ['top-left', 'bottom-left']
@@ -206,7 +197,7 @@ export class LabelPlacer {
       for (const sector of sectors) {
         const items = buckets.get(sector)!;
         if (items.length === 0) continue;
-        const placed = placeQuadrant(sector, items, boundary, sideMaxW, labelDims);
+        const placed = placeQuadrant(sector, items, boundary, sideMaxW, dim);
         primary.push(...placed.primary);
         if (placed.overflow.length > 0) overflowGroups.push(placed.overflow);
       }
@@ -214,7 +205,7 @@ export class LabelPlacer {
       // Leader lines crossing each other is a genuine drafting fault, not a matter of taste. Order
       // the labels in each column to match the order of the things they point at, and they cannot
       // cross.
-      reassignSlotsByAnchorOrder(primary, anchorYById, dim);
+      reassignSlotsByAnchorOrder(primary, anchorYById);
 
       // Move the whole column back on screen together. Pulling each label back individually
       // would pile them all onto the same spot at the edge.
@@ -228,64 +219,6 @@ export class LabelPlacer {
     }
     return results;
   }
-}
-
-/**
- * Sends each quarter of the screen to its own edge, so all four margins carry labels instead of two.
- *
- * Using only columns or only rows leaves half the space around the drawing empty while the other
- * half is overloaded, and a busy drawing needs more room than two margins can offer.
- *
- * The quarters are assigned in a pinwheel: top-left to the left edge, bottom-left to the bottom,
- * bottom-right to the right, top-right to the top. Every quarter lands on an edge it already faces,
- * and no label ever has to choose between two edges. That last part matters more than it sounds —
- * a "nearest edge" decision taken fresh each frame is one more thing that can flip during an orbit
- * and set the drawing swimming.
- */
-function placePerimeter(
-  buckets: Map<LabelSector, InternalAnchor[]>,
-  boundary: { min: Vec2; max: Vec2 },
-  viewportSize: Vec2,
-  insets: ViewportInsets,
-  dim: (id: string) => { width: number; height: number },
-  anchors: Array<{ id: string; screenPos: Vec2 }>,
-): PlacementResult[] {
-  const results: PlacementResult[] = [];
-  const anchorYById = new Map<string, number>();
-  const anchorXById = new Map<string, number>();
-  for (const anchor of anchors) {
-    anchorYById.set(anchor.id, anchor.screenPos.y);
-    anchorXById.set(anchor.id, anchor.screenPos.x);
-  }
-
-  for (const sector of ['top-left', 'bottom-right'] as const) {
-    const items = buckets.get(sector)!;
-    if (items.length === 0) continue;
-    const sideMaxW = Math.max(DEFAULT_LABEL_WIDTH, ...items.map((item) => dim(item.id).width));
-    const placed = placeQuadrant(sector, items, boundary, sideMaxW, undefined, dim);
-    reassignSlotsByAnchorOrder(placed.primary, anchorYById, dim);
-    shiftColumnIntoViewport(placed.primary, viewportSize, insets, dim);
-    if (placed.overflow.length > 0) shiftColumnIntoViewport(placed.overflow, viewportSize, insets, dim);
-    for (const p of [...placed.primary, ...placed.overflow]) {
-      clampX(p, dim(p.annotationId).width, viewportSize, insets);
-      results.push(p);
-    }
-  }
-
-  for (const sector of ['top-right', 'bottom-left'] as const) {
-    const items = buckets.get(sector)!;
-    if (items.length === 0) continue;
-    const placed = placeBandQuadrant(sector, items, boundary, undefined, dim);
-    reassignSlotsByAnchorOrderX(placed.primary, anchorXById, dim);
-    separateRowOverlaps(placed.primary, dim);
-    shiftRowIntoViewport(placed.primary, viewportSize, insets, dim);
-    if (placed.overflow.length > 0) shiftRowIntoViewport(placed.overflow, viewportSize, insets, dim);
-    for (const p of [...placed.primary, ...placed.overflow]) {
-      clampY(p, dim(p.annotationId).height, viewportSize, insets);
-      results.push(p);
-    }
-  }
-  return results;
 }
 
 /**
@@ -305,14 +238,10 @@ function placeQuadrant(
   items: InternalAnchor[],
   boundary: { min: Vec2; max: Vec2 },
   sideMaxW: number,
-  labelDims: Map<string, { width: number; height: number }> | undefined,
-  resolvedDim?: (id: string) => { width: number; height: number },
+  dim: (id: string) => { width: number; height: number },
 ): { primary: PlacementResult[]; overflow: PlacementResult[] } {
   const isLeft = sector === 'top-left' || sector === 'bottom-left';
   const isTop = sector === 'top-left' || sector === 'top-right';
-
-  const dim = resolvedDim ?? ((id: string) =>
-    labelDims?.get(id) ?? { width: DEFAULT_LABEL_WIDTH, height: DEFAULT_LABEL_HEIGHT });
 
   // Step 1: decide who fits. Targets closest to the edge get the direct positions, because a short
   // straight leader is better than a long one and they have the least distance to cover.
@@ -363,24 +292,13 @@ function placeQuadrant(
     const labelH = dim(item.id).height;
     const spacing = Math.max((prevSlotH + labelH) / 2 + GAP, 28);
 
-    let labelY: number;
-    let hint: RoutingHint;
-
-    if (prevSlotY === null) {
-      labelY = item.screenPos.y;
-      hint = 'direct';
-    } else {
+    let labelY = item.screenPos.y;
+    if (prevSlotY !== null) {
       const requiredY = prevSlotY + step * spacing;
       const naturalFits = isTop
         ? item.screenPos.y >= requiredY
         : item.screenPos.y <= requiredY;
-      if (naturalFits) {
-        labelY = item.screenPos.y;
-        hint = 'direct';
-      } else {
-        labelY = requiredY;
-        hint = 'diagonal';
-      }
+      if (!naturalFits) labelY = requiredY;
     }
 
     primaryOut.push({
@@ -388,7 +306,7 @@ function placeQuadrant(
       position: { x: labelX, y: labelY - labelH / 2 },
       sector,
       connectionEdge,
-      routingHint: hint,
+      overflow: false,
     });
     prevSlotY = labelY;
     prevSlotH = labelH;
@@ -421,7 +339,7 @@ function placeQuadrant(
       position: { x: labelX, y: labelY - labelH / 2 },
       sector,
       connectionEdge,
-      routingHint: 'overflow',
+      overflow: true,
       overflowElbow: { x: connectionX, y: labelY },
     });
   }
@@ -437,7 +355,6 @@ function placeQuadrant(
 function reassignSlotsByAnchorOrder(
   placements: PlacementResult[],
   anchorYById: Map<string, number>,
-  dim: (id: string) => { width: number; height: number },
 ): void {
   if (placements.length < 2) return;
   const slotYs = placements.map((p) => p.position.y).sort((a, b) => a - b);
@@ -446,11 +363,7 @@ function reassignSlotsByAnchorOrder(
   );
   byAnchorY.forEach((p, i) => {
     const slotY = slotYs[i];
-    if (slotY === undefined) return;
-    p.position = { x: p.position.x, y: slotY };
-    const centerY = slotY + dim(p.annotationId).height / 2;
-    const anchorY = anchorYById.get(p.annotationId) ?? centerY;
-    p.routingHint = Math.abs(centerY - anchorY) < 1 ? 'direct' : 'diagonal';
+    if (slotY !== undefined) p.position = { x: p.position.x, y: slotY };
   });
 }
 
@@ -504,14 +417,10 @@ function placeBandQuadrant(
   sector: LabelSector,
   items: InternalAnchor[],
   boundary: { min: Vec2; max: Vec2 },
-  labelDims: Map<string, { width: number; height: number }> | undefined,
-  resolvedDim?: (id: string) => { width: number; height: number },
+  dim: (id: string) => { width: number; height: number },
 ): { primary: PlacementResult[]; overflow: PlacementResult[] } {
   const isLeft = sector === 'top-left' || sector === 'bottom-left';
   const isTop = sector === 'top-left' || sector === 'top-right';
-
-  const dim = resolvedDim ?? ((id: string) =>
-    labelDims?.get(id) ?? { width: DEFAULT_LABEL_WIDTH, height: DEFAULT_LABEL_HEIGHT });
 
   // Step 1: decide who fits. Targets closest to the edge get the direct positions, as in a
   // column — only measured vertically rather than horizontally.
@@ -562,24 +471,13 @@ function placeBandQuadrant(
     // label's width alone would let a narrow label land partly inside a wide one.
     const spacing = (prevSlotW + labelW) / 2 + GAP;
 
-    let labelX: number; // slot CENTRE x
-    let hint: RoutingHint;
-
-    if (prevSlotX === null) {
-      labelX = item.screenPos.x;
-      hint = 'direct';
-    } else {
+    let labelX = item.screenPos.x; // slot CENTRE x
+    if (prevSlotX !== null) {
       const requiredX = prevSlotX + step * spacing;
       const naturalFits = isLeft
         ? item.screenPos.x >= requiredX
         : item.screenPos.x <= requiredX;
-      if (naturalFits) {
-        labelX = item.screenPos.x;
-        hint = 'direct';
-      } else {
-        labelX = requiredX;
-        hint = 'diagonal';
-      }
+      if (!naturalFits) labelX = requiredX;
     }
 
     const labelH = dim(item.id).height;
@@ -588,7 +486,7 @@ function placeBandQuadrant(
       position: { x: labelX - labelW / 2, y: labelYOf(labelH) },
       sector,
       connectionEdge,
-      routingHint: hint,
+      overflow: false,
     });
     prevSlotX = labelX;
     prevSlotW = labelW;
@@ -623,7 +521,7 @@ function placeBandQuadrant(
       position: { x: labelX - labelW / 2, y: labelY },
       sector,
       connectionEdge,
-      routingHint: 'overflow',
+      overflow: true,
       overflowElbow: { x: labelX, y: isTop ? innerEdgeY + EDGE_MARGIN / 2 : innerEdgeY - EDGE_MARGIN / 2 },
     });
   }
@@ -650,11 +548,7 @@ function separateRowOverlaps(
     const cur = sorted[i];
     if (!prev || !cur) continue;
     const minX = prev.position.x + dim(prev.annotationId).width + GAP;
-    if (cur.position.x < minX) {
-      cur.position = { x: minX, y: cur.position.y };
-      // Pushed off centre, so its leader now has to come in at an angle rather than straight down.
-      if (cur.routingHint === 'direct') cur.routingHint = 'diagonal';
-    }
+    if (cur.position.x < minX) cur.position = { x: minX, y: cur.position.y };
   }
 }
 
@@ -663,7 +557,6 @@ function separateRowOverlaps(
 function reassignSlotsByAnchorOrderX(
   placements: PlacementResult[],
   anchorXById: Map<string, number>,
-  dim: (id: string) => { width: number; height: number },
 ): void {
   if (placements.length < 2) return;
   const slotXs = placements.map((p) => p.position.x).sort((a, b) => a - b);
@@ -672,11 +565,7 @@ function reassignSlotsByAnchorOrderX(
   );
   byAnchorX.forEach((p, i) => {
     const slotX = slotXs[i];
-    if (slotX === undefined) return;
-    p.position = { x: slotX, y: p.position.y };
-    const centerX = slotX + dim(p.annotationId).width / 2;
-    const anchorX = anchorXById.get(p.annotationId) ?? centerX;
-    p.routingHint = Math.abs(centerX - anchorX) < 1 ? 'direct' : 'diagonal';
+    if (slotX !== undefined) p.position = { x: slotX, y: p.position.y };
   });
 }
 
@@ -741,13 +630,10 @@ export function uncrossLeaderSlots(
   placements: PlacementResult[],
   anchors: ReadonlyMap<string, Vec2>,
   labelDims?: ReadonlyMap<string, { width: number; height: number }>,
-  pinnedIds?: ReadonlySet<string>,
-  sizeTolerance = 2,
 ): void {
   const dim = (id: string) =>
     labelDims?.get(id) ?? { width: DEFAULT_LABEL_WIDTH, height: DEFAULT_LABEL_HEIGHT };
-  const eligible = placements.filter((p) =>
-    p.routingHint !== 'overflow' && !pinnedIds?.has(p.annotationId) && anchors.has(p.annotationId));
+  const eligible = placements.filter((p) => !p.overflow && anchors.has(p.annotationId));
   const centre = (p: PlacementResult): Vec2 => {
     const d = dim(p.annotationId);
     return { x: p.position.x + d.width / 2, y: p.position.y + d.height / 2 };
@@ -769,7 +655,7 @@ export function uncrossLeaderSlots(
         const db = dim(b.annotationId);
         const vertical = a.connectionEdge === 'top' || a.connectionEdge === 'bottom';
         const sizeDelta = vertical ? Math.abs(da.width - db.width) : Math.abs(da.height - db.height);
-        if (sizeDelta > sizeTolerance) continue;
+        if (sizeDelta > 2) continue;
         const pa = anchors.get(a.annotationId);
         const pb = anchors.get(b.annotationId);
         if (!pa || !pb) continue;
@@ -799,7 +685,6 @@ export function uncrossLeaderSlots(
         const nb = slotPosFor(a, b);
         a.position = na;
         b.position = nb;
-        [a.routingHint, b.routingHint] = [b.routingHint, a.routingHint];
         [a.sector, b.sector] = [b.sector, a.sector];
         swapped = true;
       }
