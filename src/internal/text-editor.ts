@@ -121,7 +121,11 @@ export interface TextEditorHost {
     update(id: string, patch: AnnotationPatch): unknown;
     subscribe(listener: () => void): () => void;
   };
-  readonly authoring: { getSnapshot(): { readonly phase: string } };
+  readonly authoring: {
+    getSnapshot(): { readonly phase: string };
+    readonly markup?: { getSnapshot(): { readonly phase: string } };
+    readonly plugins?: { getSnapshot(): { readonly phase: string } };
+  };
   readonly editing: {
     hitTestScreen(at: Vec2): { readonly kind: string; readonly id: string } | undefined;
   };
@@ -452,7 +456,12 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
   }
 
   #doubleClick(event: DoubleClickEventLike): void {
-    if (this.#disposed || this.#host.authoring.getSnapshot().phase !== 'idle') return;
+    if (
+      this.#disposed
+      || this.#host.authoring.getSnapshot().phase !== 'idle'
+      || (this.#host.authoring.markup?.getSnapshot().phase ?? 'idle') !== 'idle'
+      || (this.#host.authoring.plugins?.getSnapshot().phase ?? 'idle') !== 'idle'
+    ) return;
     const hit = this.#host.editing.hitTestScreen(localPoint(event));
     if (hit?.kind === 'label') this.open(hit.id);
   }

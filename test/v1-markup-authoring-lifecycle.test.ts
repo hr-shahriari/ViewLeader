@@ -436,6 +436,208 @@ describe('public normalized markup authoring lifecycle', () => {
     leader.dispose();
   });
 
+  it('preempts in the three reverse tool directions', async () => {
+    {
+      const release = vi.fn();
+      const leader = new ViewLeader({
+        boundary: boundary(),
+        adapters: adapters({ interaction: { acquire: () => ({ release }) } }),
+        plugins: [markdownPlugin],
+      });
+      const builtIn = leader.authoring.start({
+        draft: { id: 'built-in-before-plugin', content: { kind: 'plain-note', text: 'Note' } },
+      });
+      leader.authoring.plugins.start({ pluginId: 'viewleader.markdown', toolId: 'author' });
+      await expect(builtIn).resolves.toEqual({ status: 'cancelled', reason: 'preempted' });
+      leader.authoring.plugins.cancel();
+      expect(release).toHaveBeenCalledTimes(2);
+      leader.dispose();
+    }
+
+    {
+      const release = vi.fn();
+      const leader = new ViewLeader({
+        boundary: boundary(),
+        adapters: adapters({ interaction: { acquire: () => ({ release }) } }),
+      });
+      const markup = leader.authoring.markup.start({
+        kind: 'rectangle',
+        draft: { id: 'markup-before-built-in', content: { kind: 'plain-note', text: 'Markup' } },
+        plane,
+      });
+      const builtIn = leader.authoring.start({
+        draft: { id: 'built-in-after-markup', content: { kind: 'plain-note', text: 'Note' } },
+      });
+      await expect(markup).resolves.toEqual({ status: 'cancelled', reason: 'preempted' });
+      leader.authoring.cancel();
+      await expect(builtIn).resolves.toEqual({ status: 'cancelled', reason: 'host' });
+      expect(release).toHaveBeenCalledTimes(2);
+      leader.dispose();
+    }
+
+    {
+      const release = vi.fn();
+      const leader = new ViewLeader({
+        boundary: boundary(),
+        adapters: adapters({ interaction: { acquire: () => ({ release }) } }),
+        plugins: [markdownPlugin],
+      });
+      leader.authoring.plugins.start({ pluginId: 'viewleader.markdown', toolId: 'author' });
+      const builtIn = leader.authoring.start({
+        draft: { id: 'built-in-after-plugin', content: { kind: 'plain-note', text: 'Note' } },
+      });
+      expect(leader.authoring.plugins.getSnapshot().phase).toBe('idle');
+      leader.authoring.cancel();
+      await expect(builtIn).resolves.toEqual({ status: 'cancelled', reason: 'host' });
+      expect(release).toHaveBeenCalledTimes(2);
+      leader.dispose();
+    }
+  });
+
+  it('preserves active markup and plugin tools when built-in plugin content is rejected', async () => {
+    const invalidContent = {
+      kind: 'plugin:missing' as const,
+      pluginId: 'missing',
+      schemaVersion: 1,
+      data: {},
+    };
+
+    {
+      const release = vi.fn();
+      const acquire = vi.fn(() => ({ release }));
+      const leader = new ViewLeader({
+        boundary: boundary(),
+        adapters: adapters({ interaction: { acquire } }),
+      });
+      const active = leader.authoring.markup.start({
+        kind: 'rectangle',
+        draft: { id: 'kept-markup', content: { kind: 'plain-note', text: 'Markup' } },
+        plane,
+      });
+      expect(() => leader.authoring.start({
+        draft: { id: 'invalid-built-in', content: invalidContent },
+      })).toThrowError(expect.objectContaining({ code: 'INVALID_PLUGIN' }));
+      expect(leader.authoring.markup.getSnapshot().phase).toBe('drawing');
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      leader.authoring.markup.cancel();
+      await expect(active).resolves.toEqual({ status: 'cancelled', reason: 'host' });
+      expect(release).toHaveBeenCalledOnce();
+      leader.dispose();
+    }
+
+    {
+      const release = vi.fn();
+      const acquire = vi.fn(() => ({ release }));
+      const leader = new ViewLeader({
+        boundary: boundary(),
+        adapters: adapters({ interaction: { acquire } }),
+        plugins: [markdownPlugin],
+      });
+      leader.authoring.plugins.start({ pluginId: 'viewleader.markdown', toolId: 'author' });
+      expect(() => leader.authoring.start({
+        draft: { id: 'invalid-built-in', content: invalidContent },
+      })).toThrowError(expect.objectContaining({ code: 'INVALID_PLUGIN' }));
+      expect(leader.authoring.plugins.getSnapshot().phase).toBe('active');
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      leader.authoring.plugins.cancel();
+      expect(release).toHaveBeenCalledOnce();
+      leader.dispose();
+    }
+  });
+
+  it('still preempts the current tool before a built-in lease acquisition fails', async () => {
+    const release = vi.fn();
+    const acquire = vi.fn()
+      .mockReturnValueOnce({ release })
+      .mockImplementationOnce(() => { throw new Error('camera refused'); });
+    const leader = new ViewLeader({
+      boundary: boundary(),
+      adapters: adapters({ interaction: { acquire } }),
+    });
+    const markup = leader.authoring.markup.start({
+      kind: 'rectangle',
+      draft: { id: 'preempted-before-failure', content: { kind: 'plain-note', text: 'Markup' } },
+      plane,
+    });
+    const failed = leader.authoring.start({
+      draft: { id: 'failed-built-in', content: { kind: 'plain-note', text: 'Note' } },
+    });
+    await expect(markup).resolves.toEqual({ status: 'cancelled', reason: 'preempted' });
+    await expect(failed).resolves.toMatchObject({ status: 'failed', error: { code: 'ADAPTER_ERROR' } });
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledOnce();
+    leader.dispose();
+  });
+
+  it('validates and clones plugin startup input before acquiring its lease', () => {
+    const cause = new Error('camera refused');
+    const acquire = vi.fn(() => { throw cause; });
+    const leader = new ViewLeader({
+      boundary: boundary(),
+      adapters: adapters({ interaction: { acquire } }),
+      plugins: [markdownPlugin],
+    });
+
+    expect(() => leader.authoring.plugins.start({
+      pluginId: 'missing',
+      toolId: 'author',
+    })).toThrowError(expect.objectContaining({ code: 'INVALID_PLUGIN' }));
+    expect(() => leader.authoring.plugins.start({
+      pluginId: 'viewleader.markdown',
+      toolId: 'missing',
+    })).toThrowError(expect.objectContaining({ code: 'INVALID_PLUGIN' }));
+    expect(acquire).not.toHaveBeenCalled();
+
+    expect(() => leader.authoring.plugins.start({
+      pluginId: 'viewleader.markdown',
+      toolId: 'author',
+      draft: {
+        id: 'uncloneable',
+        anchor: { kind: 'world-point', point: { x: 0, y: 0, z: 0 } },
+        invalid: () => undefined,
+      } as never,
+    })).toThrow();
+    expect(acquire).not.toHaveBeenCalled();
+
+    try {
+      leader.authoring.plugins.start({ pluginId: 'viewleader.markdown', toolId: 'author' });
+      throw new Error('Expected plugin startup to fail');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'ADAPTER_ERROR', cause });
+    }
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(leader.authoring.plugins.getSnapshot().phase).toBe('idle');
+    leader.dispose();
+  });
+
+  it('isolates a plugin authoring draft and releases its lease once', () => {
+    const release = vi.fn();
+    const draft = {
+      id: 'isolated-plugin-draft',
+      anchor: { kind: 'world-point' as const, point: { x: 1, y: 2, z: 3 } },
+    };
+    const leader = new ViewLeader({
+      boundary: boundary(),
+      adapters: adapters({ interaction: { acquire: () => ({ release }) } }),
+      plugins: [markdownPlugin],
+    });
+    leader.authoring.plugins.start({ pluginId: 'viewleader.markdown', toolId: 'author', draft });
+    draft.anchor.point.x = 99;
+    leader.authoring.plugins.dispatch({
+      kind: 'programmatic',
+      action: 'set-source',
+      data: { source: 'isolated' },
+    });
+    leader.authoring.plugins.dispatch({ kind: 'programmatic', action: 'complete' });
+    expect(leader.annotations.get('isolated-plugin-draft')?.anchors[0]?.anchor).toEqual({
+      kind: 'world-point', point: { x: 1, y: 2, z: 3 },
+    });
+    expect(release).toHaveBeenCalledOnce();
+    leader.dispose();
+  });
+
   it('aborts pending surface work and releases the lease during disposal', async () => {
     const picked = deferred<SurfacePickResult | null>();
     const release = vi.fn();

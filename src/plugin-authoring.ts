@@ -1,5 +1,5 @@
 import type { DocumentEngine } from './document.js';
-import { domainError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import {
   type DeclarativePrimitive,
   type ExtensionRuntime,
@@ -109,11 +109,17 @@ export class PluginAuthoringController {
     this.cancel('preempted');
     this.#preemptBuiltIn();
     const state = this.#extensions.beginTool(options.pluginId, options.toolId);
-    const lease = this.#interaction?.acquire('authoring');
+    const draft = options.draft === undefined ? undefined : structuredClone(options.draft);
+    let lease: InteractionLease | undefined;
+    try {
+      lease = this.#interaction?.acquire('authoring');
+    } catch (cause) {
+      throw new AdapterError('interaction lease acquisition', cause);
+    }
     this.#active = {
       pluginId: options.pluginId,
       toolId: options.toolId,
-      ...(options.draft === undefined ? {} : { draft: structuredClone(options.draft) }),
+      ...(draft === undefined ? {} : { draft }),
       ...(lease === undefined ? {} : { lease }),
       state,
       preview: Object.freeze([]),

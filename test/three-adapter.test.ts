@@ -4,11 +4,12 @@ import {
   Mesh,
   MeshBasicMaterial,
   Object3D,
+  OrthographicCamera,
   PerspectiveCamera,
   PlaneGeometry,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { ViewLeader, type NeutralViewerState } from 'viewleader';
+import { AdapterError, ViewLeader, type NeutralViewerState } from 'viewleader';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createStableElementResolver,
@@ -16,8 +17,153 @@ import {
   createThreeElementInvalidationChannel,
   type ThreeHostViewerState,
 } from '../src/three/index.js';
+import { HostIntegration } from '../src/host.js';
 
 describe('viewleader/three', () => {
+  it('projects raw model rectangles without viewport clipping for perspective and orthographic cameras', () => {
+    const perspective = createThreeAdapter({
+      camera: cameraAt({ x: 0, y: 0, z: 5 }),
+      viewport: () => ({ width: 800, height: 400, devicePixelRatio: 1 }),
+    });
+    const viewport = perspective.projection.getViewport();
+    const offscreen = perspective.projection.projectBounds!({
+      min: { x: 12, y: -1, z: -1 }, max: { x: 14, y: 1, z: 1 },
+    }, viewport);
+    expect(offscreen.status).toBe('available');
+    if (offscreen.status === 'available') expect(offscreen.bounds.min.x).toBeGreaterThan(800);
+
+    const camera = new OrthographicCamera(-4, 4, 2, -2, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    const orthographic = createThreeAdapter({
+      camera,
+      viewport: () => ({ width: 800, height: 400, devicePixelRatio: 1 }),
+    });
+    expect(orthographic.projection.projectBounds!({
+      min: { x: -2, y: -1, z: -1 }, max: { x: 2, y: 1, z: 1 },
+    }, viewport)).toEqual({
+      status: 'available', bounds: { min: { x: 200, y: 100 }, max: { x: 600, y: 300 } },
+    });
+  });
+
+  it('clips model-box edges at near and far planes instead of mirroring or protecting invisible boxes', () => {
+    const camera = new PerspectiveCamera(60, 2, 0.1, 100);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    const adapter = createThreeAdapter({
+      camera,
+      viewport: () => ({ width: 800, height: 400, devicePixelRatio: 1 }),
+    });
+    const viewport = adapter.projection.getViewport();
+
+    // The camera is inside this box. Its near-plane edge intersections form a very large but
+    // finite raw rectangle; projecting its behind-camera corners would instead mirror it.
+    const enclosing = adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: -1 }, max: { x: 1, y: 1, z: 1 },
+    }, viewport);
+    expect(enclosing.status).toBe('available');
+    if (enclosing.status === 'available') {
+      expect(enclosing.bounds.min.x).toBeLessThan(0);
+      expect(enclosing.bounds.max.x).toBeGreaterThan(800);
+      expect(enclosing.bounds.min.y).toBeLessThan(0);
+      expect(enclosing.bounds.max.y).toBeGreaterThan(400);
+      expect(Object.values(enclosing.bounds.min).concat(Object.values(enclosing.bounds.max)).every(Number.isFinite)).toBe(true);
+    }
+
+    expect(adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: 1 }, max: { x: 1, y: 1, z: 2 },
+    }, viewport)).toEqual({ status: 'empty' });
+    expect(adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: -101 }, max: { x: 1, y: 1, z: -102 },
+    }, viewport)).toEqual({ status: 'empty' });
+
+    // This box spans both clip planes without containing a usable corner. Its edge intersections
+    // still form a finite rectangle, so clipping cannot be implemented by filtering corners.
+    expect(adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: -200 }, max: { x: 1, y: 1, z: 1 },
+    }, viewport)).toMatchObject({ status: 'available' });
+    // Near and far planes are valid clipping boundaries, not a reason to shrink the protected
+    // rectangle by epsilon and let a label overlap the model's exact visible edge.
+    expect(adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: -0.1 }, max: { x: 1, y: 1, z: -0.1 },
+    }, viewport)).toMatchObject({ status: 'available' });
+    expect(adapter.projection.projectBounds!({
+      min: { x: -1, y: -1, z: -100 }, max: { x: 1, y: 1, z: -100 },
+    }, viewport)).toMatchObject({ status: 'available' });
+  });
+
+  it('caches model bounds by host revision and rejects malformed strict projection results', () => {
+    const object = new Mesh(new PlaneGeometry(1, 1), new MeshBasicMaterial());
+    let revision = 1;
+    const objects = vi.fn(() => [object]);
+    const adapter = createThreeAdapter({
+      camera: cameraAt({ x: 0, y: 0, z: 5 }),
+      viewport: () => ({ width: 800, height: 400, devicePixelRatio: 1 }),
+      modelBounds: objects,
+      modelBoundsRevision: () => revision,
+    });
+    const host = new HostIntegration(adapter, () => undefined, () => undefined);
+    const first = host.modelBounds();
+    const repeated = host.modelBounds();
+    expect(objects).toHaveBeenCalledOnce();
+    expect(repeated).toEqual(first);
+
+    object.position.x = 4;
+    revision += 1;
+    const moved = host.modelBounds();
+    expect(objects).toHaveBeenCalledTimes(2);
+    expect(moved?.min.x).toBeGreaterThan(first!.min.x);
+
+    let calledWithAdapterThis = false;
+    const projection = {
+        getViewport: () => ({ width: 1, height: 1, devicePixelRatio: 1 }),
+        project: () => null,
+        projectBounds() {
+          calledWithAdapterThis = this === projection;
+          return null as never;
+        },
+      };
+    const malformed = new HostIntegration({ projection }, () => undefined, () => undefined);
+    expect(() => malformed.projectBounds(
+      { min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } },
+      malformed.viewport,
+    )).toThrow(AdapterError);
+    expect(calledWithAdapterThis).toBe(true);
+    const malformedNested = new HostIntegration({
+      projection: { ...projection, projectBounds: () => ({ status: 'available' } as never) },
+    }, () => undefined, () => undefined);
+    expect(() => malformedNested.projectBounds(
+      { min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } },
+      malformedNested.viewport,
+    )).toThrow(AdapterError);
+
+    let retryRevision = 1;
+    let retryCalls = 0;
+    let failRead = false;
+    const retrying = new HostIntegration({
+      projection: { getViewport: () => ({ width: 1, height: 1, devicePixelRatio: 1 }), project: () => null },
+      modelBounds: {
+        getRevision: () => retryRevision,
+        get: () => {
+          retryCalls += 1;
+          if (failRead) throw new Error('temporary bounds failure');
+          return { min: { x: retryRevision, y: 0, z: 0 }, max: { x: retryRevision + 1, y: 1, z: 1 } };
+        },
+      },
+    }, () => undefined, () => undefined);
+    expect(retrying.modelBounds()?.min.x).toBe(1);
+    retryRevision = 2;
+    failRead = true;
+    expect(() => retrying.modelBounds()).toThrow('temporary bounds failure');
+    failRead = false;
+    expect(retrying.modelBounds()?.min.x).toBe(2);
+    expect(retryCalls).toBe(3);
+    object.geometry.dispose();
+    (object.material as MeshBasicMaterial).dispose();
+  });
+
   it('projects with full clip-volume culling and does not own borrowed camera or controls', () => {
     const camera = cameraAt({ x: 0, y: 0, z: 5 });
     const controls = { enabled: true };

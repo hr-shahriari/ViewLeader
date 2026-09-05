@@ -23,3 +23,5 @@ Thumbs.db
 
 test-results/
 .scratch/
+graphify-out/cache/
+docs/plans/

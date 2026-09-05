@@ -2,6 +2,7 @@ import { DEFAULT_LANDING, type LandingRender, type LandingSide } from './definit
 import { finitePoint, segmentThroughInterior } from './lint.js';
 import { domainError } from './errors.js';
 import type { AnnotationPlacement, Vec2 } from './types.js';
+import { selectTextBaseline } from './landing-stability.js';
 
 export interface ScreenBounds {
   readonly x: number;
@@ -15,16 +16,6 @@ export type LegRoute =
   | { readonly mode: 'dogleg' }
   | { readonly mode: 'orthogonal' }
   | { readonly mode: 'manual'; readonly vertices: readonly Vec2[] };
-
-export interface PlacementInput {
-  readonly id: string;
-  readonly projectedAnchors: readonly Vec2[];
-  readonly labelSize: Readonly<{ width: number; height: number }>;
-  readonly placement: AnnotationPlacement;
-  /** The user pinned this annotation. It still follows its anchor, but nothing may push it aside
-   *  to make room for something else. */
-  readonly locked?: boolean;
-}
 
 interface RoutedLeg {
   readonly id: string;
@@ -346,7 +337,7 @@ function sharedLanding(
   // lines of text. Leaders arriving from above or below do not use text lines at all.
   const lines = side === 'top' || side === 'bottom' ? undefined : landing?.textLines;
   const line = lines === undefined ? undefined
-    : middle.y <= centre.y ? lines.first : lines.last;
+    : lines[selectTextBaseline(middle.y - centre.y)];
   return {
     ...landing,
     side,
@@ -504,7 +495,7 @@ function doglegRoute(anchor: Vec2, bounds: ScreenBounds, landing: LandingGeometr
   // is the drafting rule, and it is what stops a leader pointing at the middle of a paragraph.
   const y = landing.textLines === undefined
     ? centre.y
-    : bounds.y + (anchor.y <= centre.y ? landing.textLines.first : landing.textLines.last);
+    : bounds.y + landing.textLines[selectTextBaseline(anchor.y - centre.y)];
   // A label pushed into a second column bends at the edge of the column it came from. Skipped when
   // the bend would sit on the wrong side of the meeting point, since that makes the leader double
   // back — worse than no bend at all.

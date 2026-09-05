@@ -84,21 +84,22 @@ import { invalidateTextMetrics, watchFontLoading } from './textMetrics.js';
 import {
   breakAroundObstacles,
   routeLegs,
-  type PlacementInput,
   type LegRoute,
   type RouteLegInput,
   type ScreenBounds,
 } from './routing.js';
 import {
   LabelPlacer,
-  SECTOR_HYSTERESIS,
-  uncrossLeaderSlots,
+  anchorCloudFrame,
   type ConnectionEdge,
-  type LabelSector,
+  type PlacementInput,
   type PlacementMode,
   type ViewportInsets,
 } from './labelPlacer.js';
 import { separateLabels } from './separation.js';
+import { OrganizationPlanner, type OrganizationInput, type OrganizationPlan } from './organization.js';
+import { LandingStability, type LandingProposal } from './landing-stability.js';
+import { constrainOutsideModel, enclosingBounds } from './model-constraints.js';
 import {
   BoundaryMemory,
   resolveLayoutFrame,
@@ -210,42 +211,27 @@ interface LayoutCandidate {
 }
 
 /**
- * Makes up a frame when there is nothing to frame: the box spanned by whatever the annotations
- * themselves point at.
+ * What a drag is showing before it is written down.
  *
- * This keeps everything on one arrangement algorithm. With a second one for the no-frame case,
- * gaining or losing the model's outline midway through an orbit would swap algorithms and move
- * every label at once. For arranging labels, "the model" is really just whatever the notes point
- * at, which is what the model's outline approximates anyway.
- *
- * Given a minimum size, because the arrangement divides by the frame's height and reads which side
- * of its centre things fall on. A single annotation, or several stacked on one pixel, would
- * otherwise produce a frame with no area and put every label on the same edge.
+ * One slot, not five: a gesture has one kind, fixed when the pointer goes down (`ActiveDrag.kind`
+ * is readonly in editing.ts) and its move handler sets exactly one of these. Held here rather
+ * than in the document, so a drag costs one undo step on release rather than one per pixel.
  */
-const MINIMUM_SYNTHETIC_FRAME = 2 * SECTOR_HYSTERESIS;
+type DragPreview =
+  /** Where a label is being dragged to. */
+  | { readonly kind: 'placement'; readonly id: string; readonly position: Vec2 }
+  /** An arrow being dragged, in screen coordinates — where it points in the model is not known
+   *  until the host is asked on release. */
+  | { readonly kind: 'anchor'; readonly id: string; readonly legId: string; readonly at: Vec2 }
+  /** A leader being reshaped, as the drag would leave it. */
+  | { readonly kind: 'route'; readonly id: string; readonly legId: string; readonly route: LegRoute }
+  /** A region being edited, already converted onto its own plane — a region drag never leaves
+   *  the surface it is drawn on. */
+  | { readonly kind: 'region'; readonly id: string; readonly legId: string; readonly anchor: MarkupRegionAnchor }
+  /** A stroke being edited, likewise on its own plane. `id` is an ink id, not an annotation id. */
+  | { readonly kind: 'ink'; readonly id: string; readonly ink: InkAnnotation };
 
-function anchorCloudFrame(inputs: readonly PlacementInput[]): Bounds2 {
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const input of inputs) {
-    for (const anchor of input.projectedAnchors) {
-      if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) continue;
-      minX = Math.min(minX, anchor.x);
-      minY = Math.min(minY, anchor.y);
-      maxX = Math.max(maxX, anchor.x);
-      maxY = Math.max(maxY, anchor.y);
-    }
-  }
-  // Nothing is on screen, so any box will do — there is nothing to arrange around it.
-  if (!Number.isFinite(minX)) return { min: { x: 0, y: 0 }, max: { x: MINIMUM_SYNTHETIC_FRAME, y: MINIMUM_SYNTHETIC_FRAME } };
-  const padX = Math.max(0, MINIMUM_SYNTHETIC_FRAME - (maxX - minX)) / 2;
-  const padY = Math.max(0, MINIMUM_SYNTHETIC_FRAME - (maxY - minY)) / 2;
-  return { min: { x: minX - padX, y: minY - padY }, max: { x: maxX + padX, y: maxY + padY } };
-}
-
-const PLACEMENT_MODES: readonly PlacementMode[] = ['sides', 'rows', 'auto'];
+const PLACEMENT_MODES: readonly PlacementMode[] = ['sides', 'rows', 'auto', 'quadrants'];
 
 /**
  * How many annotations count as a crowded drawing, for automatic leader shaping.
@@ -278,7 +264,6 @@ export class ViewLeaderRuntime {
   readonly #window: Window | null;
   readonly #labelPlacer = new LabelPlacer();
   readonly #boundaryMemory = new BoundaryMemory();
-  readonly #previousSectors = new Map<string, LabelSector>();
   /** Where each annotation's anchors averaged out on screen this frame — the quantity an
    *  anchor-relative placement is measured against. Rebuilt from scratch every arrangement, so an
    *  annotation that was not placed this frame is simply absent. */
@@ -321,6 +306,13 @@ export class ViewLeaderRuntime {
    * and bottom of the screen sits empty.
    */
   #placementMode: PlacementMode = 'auto';
+  #keepLabelsOutsideModel = false;
+  readonly #landingStability = new LandingStability();
+  readonly #organizationPlanner = new OrganizationPlanner(this.#landingStability);
+  readonly #organizedPlacements = new Map<string, { bounds: ScreenBounds; anchor: Vec2 }>();
+  #lastModelBoundsKey: string | undefined;
+  #outsideBoundsStatus: string | undefined;
+  readonly #reportedOrganizationConflicts = new Set<string>();
   /**
    * How leader lines are shaped. By default each annotation is drawn exactly as authored.
    *
@@ -348,23 +340,8 @@ export class ViewLeaderRuntime {
     readonly connectionEdge: ConnectionEdge;
     readonly overflowElbow?: Vec2;
   }>();
-  /** Where a label is being dragged to. Held here rather than in the document, so a drag costs one
-   *  undo step on release rather than one per pixel. */
-  #placementPreview: { readonly id: string; readonly position: Vec2 } | undefined;
-  /** An arrow being dragged, in screen coordinates — where it points in the model is not known
-   *  until the host is asked on release. */
-  #anchorPreview: { readonly id: string; readonly legId: string; readonly at: Vec2 } | undefined;
-  /** A leader being reshaped, as the drag would leave it. */
-  #routePreview: { readonly id: string; readonly legId: string; readonly route: LegRoute } | undefined;
-  /** A region being edited, already converted onto its own plane — a region drag never leaves the
-   *  surface it is drawn on. */
-  #regionPreview: {
-    readonly id: string;
-    readonly legId: string;
-    readonly anchor: MarkupRegionAnchor;
-  } | undefined;
-  /** A stroke being edited, likewise already on its own plane. */
-  #inkPreview: { readonly id: string; readonly ink: InkAnnotation } | undefined;
+  /** The one drag in flight, if any. */
+  #preview: DragPreview | undefined;
   /** False when the host draws its own handles, which also stops ViewLeader hit-testing them —
    *  otherwise the opt-out would only be cosmetic. */
   readonly #handlesEnabled: boolean;
@@ -696,65 +673,21 @@ export class ViewLeaderRuntime {
   public get viewport(): ViewportSnapshot { return this.#host.viewport; }
 
   /**
-   * Draws an annotation somewhere without writing it there.
+   * Draws a drag where it would land without writing it there.
    *
    * This is what makes a drag smooth and cancelling free: the document is never touched, so there
-   * is nothing to restore and no undo step to remove.
+   * is nothing to restore and no undo step to remove. `null` clears whatever was showing.
    */
-  /**
-   * Draws a leader pointing at a screen position without writing it there.
-   *
-   * A screen position rather than a place in the model, because the pointer has no place in the
-   * model until the host is asked on release.
-   */
-  public setAnchorPreview(
-    preview: { readonly id: string; readonly legId: string; readonly at: Vec2 } | null,
-  ): void {
-    const next = preview === null
+  public setDragPreview(preview: DragPreview | null): void {
+    if (preview === null && this.#preview === undefined) return;
+    // Screen points are copied in, so the caller cannot move the frame after handing them over.
+    this.#preview = preview === null
       ? undefined
-      : { id: preview.id, legId: preview.legId, at: { ...preview.at } };
-    if (next === undefined && this.#anchorPreview === undefined) return;
-    this.#anchorPreview = next;
-    this.#publishRuntimeChange(true);
-  }
-
-  /** Draws a leader as a drag would leave it, without writing it. */
-  public setRoutePreview(
-    preview: { readonly id: string; readonly legId: string; readonly route: LegRoute } | null,
-  ): void {
-    const next = preview === null ? undefined : { ...preview };
-    if (next === undefined && this.#routePreview === undefined) return;
-    this.#routePreview = next;
-    this.#publishRuntimeChange(true);
-  }
-
-  /**
-   * Draws a region as a drag would leave it, without writing it.
-   *
-   * Given in the region's own plane rather than in screen coordinates, because a region lies flat on
-   * a surface — a screen-space preview would skew the moment the camera moved.
-   */
-  public setRegionPreview(
-    preview: { readonly id: string; readonly legId: string; readonly anchor: MarkupRegionAnchor } | null,
-  ): void {
-    const next = preview === null ? undefined : { ...preview };
-    if (next === undefined && this.#regionPreview === undefined) return;
-    this.#regionPreview = next;
-    this.#publishRuntimeChange(true);
-  }
-
-  /** Draws a stroke as a drag would leave it, likewise on its own plane. */
-  public setInkPreview(preview: { readonly id: string; readonly ink: InkAnnotation } | null): void {
-    const next = preview === null ? undefined : { ...preview };
-    if (next === undefined && this.#inkPreview === undefined) return;
-    this.#inkPreview = next;
-    this.#publishRuntimeChange(true);
-  }
-
-  public setPlacementPreview(preview: { readonly id: string; readonly position: Vec2 } | null): void {
-    const next = preview === null ? undefined : { id: preview.id, position: { ...preview.position } };
-    if (next === undefined && this.#placementPreview === undefined) return;
-    this.#placementPreview = next;
+      : preview.kind === 'anchor'
+        ? { ...preview, at: { ...preview.at } }
+        : preview.kind === 'placement'
+          ? { ...preview, position: { ...preview.position } }
+          : { ...preview };
     this.#publishRuntimeChange(true);
   }
 
@@ -931,11 +864,24 @@ export class ViewLeaderRuntime {
 
   public get placementMode(): PlacementMode { return this.#placementMode; }
 
+  public get keepLabelsOutsideModel(): boolean { return this.#keepLabelsOutsideModel; }
+
+  public setKeepLabelsOutsideModel(enabled: boolean): void {
+    if (this.#disposed || typeof enabled !== 'boolean' || this.#keepLabelsOutsideModel === enabled) return;
+    this.#keepLabelsOutsideModel = enabled;
+    this.#outsideBoundsStatus = undefined;
+    this.invalidate();
+  }
+
   /** Sets how labels are arranged. Nonsense is ignored rather than thrown — it only affects looks. */
   public setPlacementMode(mode: PlacementMode): void {
     if (this.#disposed || !PLACEMENT_MODES.includes(mode)) return;
     if (this.#placementMode === mode) return;
     this.#placementMode = mode;
+    if (mode !== 'quadrants') {
+      this.#organizedPlacements.clear();
+      this.#organizationPlanner.forget(new Set());
+    }
     this.invalidate();
   }
 
@@ -1010,7 +956,6 @@ export class ViewLeaderRuntime {
     const byPlacement = new Map<string, ScreenBounds>();
     const automatic: Array<{ id: string; screenPos: Vec2 }> = [];
     const labelDims = new Map<string, { width: number; height: number }>();
-    const anchorsById = new Map<string, Vec2>();
     this.#anchorOrigins.clear();
 
     for (const input of inputs) {
@@ -1028,7 +973,7 @@ export class ViewLeaderRuntime {
       // leaves the frustum. That is not a no-swim violation — the invariant is about unrelated
       // annotations, and the automatic path has behaved this way since day one. Upgrade path, if
       // it ever bites: remember the last full-anchor-set centroid per annotation the way
-      // `#previousSectors` remembers sides.
+      // `LabelPlacer` remembers sides.
       const origin = anchors.length === 0 ? undefined : centroid(anchors);
       if (origin !== undefined) this.#anchorOrigins.set(input.id, origin);
       if (input.placement.kind === 'manual') {
@@ -1049,12 +994,6 @@ export class ViewLeaderRuntime {
       if (origin === undefined) continue;
       automatic.push({ id: input.id, screenPos: origin });
       labelDims.set(input.id, { width, height });
-      anchorsById.set(input.id, origin);
-    }
-
-    if (automatic.length === 0) {
-      this.#previousSectors.clear();
-      return byPlacement;
     }
 
     const results = this.#labelPlacer.computePlacements(
@@ -1063,18 +1002,9 @@ export class ViewLeaderRuntime {
       { x: viewport.width, y: viewport.height },
       labelDims,
       this.#viewportInsets,
-      this.#previousSectors,
       this.#placementMode,
     );
-    uncrossLeaderSlots(results, anchorsById, labelDims);
-    // Deliberately kept rather than cleared each frame.
-    //
-    // An annotation that goes off screen never reaches the arrangement, so wiping this would throw
-    // away the memory of which side it was on. Coming back into view it would have nothing to be
-    // reluctant about and would pick a side afresh — landing on the far side of the drawing while
-    // its target had barely crossed the middle. That is exactly the swimming this prevents.
     for (const result of results) {
-      this.#previousSectors.set(result.annotationId, result.sector);
       const dims = labelDims.get(result.annotationId)!;
       byPlacement.set(result.annotationId, {
         x: result.position.x,
@@ -1147,6 +1077,7 @@ export class ViewLeaderRuntime {
     placement: Map<string, ScreenBounds>,
     inputs: readonly PlacementInput[],
     viewport: ScreenBounds,
+    protection?: Bounds2,
   ): void {
     if (placement.size < 2) return;
     const immovable = new Set(
@@ -1166,6 +1097,10 @@ export class ViewLeaderRuntime {
       {
         viewport: { width: viewport.width, height: viewport.height },
         ...(this.#viewportInsets === undefined ? {} : { insets: this.#viewportInsets }),
+        ...(protection === undefined ? {} : {
+          allowOffscreen: true,
+          constrain: (label: ScreenBounds & { id: string }) => constrainOutsideModel(label, protection, this.#placerHints.get(label.id)?.connectionEdge),
+        }),
       },
     );
     for (const label of separated) {
@@ -1173,10 +1108,16 @@ export class ViewLeaderRuntime {
     }
   }
 
+  #constrainOutside(placement: Map<string, ScreenBounds>, model: Bounds2): void {
+    for (const [id, bounds] of placement) {
+      placement.set(id, constrainOutsideModel(bounds, model, this.#placerHints.get(id)?.connectionEdge));
+    }
+  }
+
   /**
    * Forgets remembered positions for annotations that have been deleted.
    *
-   * That memory deliberately survives frames where an annotation was off screen, so a note that dips
+   * The placer's memory deliberately survives frames where an annotation was off screen, so a note that dips
    * behind the camera returns where it left. Which means it cannot simply be rebuilt each frame, and
    * without this it would grow for the whole session.
    *
@@ -1188,7 +1129,32 @@ export class ViewLeaderRuntime {
     if (revision === this.#layoutMemoryRevision) return;
     this.#layoutMemoryRevision = revision;
     const live = new Set(this.#document.document.annotations.map((annotation) => annotation.id));
-    for (const id of this.#previousSectors.keys()) if (!live.has(id)) this.#previousSectors.delete(id);
+    this.#labelPlacer.forget(live);
+    this.#organizationPlanner.forget(live);
+    this.#landingStability.forget(live);
+    for (const id of this.#organizedPlacements.keys()) if (!live.has(id)) this.#organizedPlacements.delete(id);
+    for (const id of this.#reportedOrganizationConflicts) {
+      if (!live.has(id)) this.#reportedOrganizationConflicts.delete(id);
+    }
+  }
+
+  #previewRoutes(candidate: LayoutCandidate, bounds: ScreenBounds, obstacles: readonly ScreenBounds[]) {
+    const inputs: RouteLegInput[] = candidate.legs.map((leg) => ({
+      id: leg.id,
+      anchor: leg.region === undefined ? leg.anchor : regionAttachment(leg.region, bounds).point,
+      route: leg.route,
+    }));
+    const textLines = textLineOffsets(candidate.layout);
+    const hint = this.#placerHints.get(candidate.annotation.id);
+    const proposal = this.#landingStability.preview(candidate.annotation.id, inputs, bounds, {
+      ...candidate.style.landing,
+      ...(textLines === undefined ? {} : { textLines }),
+      // An authored side wins; otherwise the arrangement supplies the inward connection edge.
+      ...(hint !== undefined && (candidate.style.landing?.side ?? 'auto') === 'auto'
+        ? { side: hint.connectionEdge } : {}),
+      ...(hint?.overflowElbow === undefined ? {} : { overflowElbow: hint.overflowElbow }),
+    });
+    return { proposal, routes: routeLegs(inputs, bounds, proposal.landing, { obstacles }) };
   }
 
   public publishTransientChange(render = false): void { this.#publishRuntimeChange(render); }
@@ -1201,14 +1167,28 @@ export class ViewLeaderRuntime {
   public update(): void {
     if (this.#disposed) return;
     const projectionRevision = this.#host.projectionRevision;
+    const modelAware = this.#keepLabelsOutsideModel || this.#placementMode === 'quadrants';
+    // A host may move, replace, or remove the model without changing its camera. Observe the
+    // current bounds before the usual frame gate in the opt-in modes so those changes redraw too.
+    const observedViewport = modelAware ? this.#host.viewport : undefined;
+    const observedWorldBounds = modelAware ? this.#host.modelBounds() : undefined;
+    if (modelAware) {
+      const key = JSON.stringify(observedWorldBounds);
+      if (key !== this.#lastModelBoundsKey) this.#renderInvalidated = true;
+      this.#lastModelBoundsKey = key;
+    }
     if (!this.#renderInvalidated
       && projectionRevision !== undefined
       && Object.is(projectionRevision, this.#lastProjectionRevision)) return;
-    const viewport = this.#host.viewport;
+    const viewport = observedViewport ?? this.#host.viewport;
+    const projectedModel = !modelAware ? undefined
+      : observedWorldBounds == null ? { status: 'empty' as const }
+      : this.#host.projectBounds(observedWorldBounds, viewport);
     const viewportBounds = { x: 0, y: 0, width: viewport.width, height: viewport.height };
     const candidates: LayoutCandidate[] = [];
     const nextImageOwners = new Set<string>();
     const document = this.#document.document;
+    this.#forgetDeletedAnnotations();
     // Counted from the document rather than from what happens to be on screen, so leaders do not
     // change shape as annotations drift in and out of view during an orbit. That would be the worst
     // kind of swimming: the drawing convention itself flickering.
@@ -1262,18 +1242,16 @@ export class ViewLeaderRuntime {
         });
       }
       if (layout === undefined) continue;
-      const anchorPreview = this.#anchorPreview?.id === annotation.id ? this.#anchorPreview : undefined;
-      const routePreview = this.#routePreview?.id === annotation.id ? this.#routePreview : undefined;
-      const regionPreview = this.#regionPreview?.id === annotation.id ? this.#regionPreview : undefined;
+      const preview = this.#preview?.id === annotation.id ? this.#preview : undefined;
       const legs = plannedAnnotation.anchors.flatMap((leg): ProjectedLeg[] => {
         const resolved = this.#host.resolved(annotation.id, leg);
-        const route = routePreview?.legId === leg.id
-          ? routePreview.route
+        const route = preview?.kind === 'route' && preview.legId === leg.id
+          ? preview.route
           : this.#resolveRouteMode(legRouteFromCore(leg.routing), candidateCount);
         if (leg.anchor.kind === 'region') {
           // A drag in progress wins over what is stored, exactly as a label preview does.
-          const anchor = regionPreview?.legId === leg.id
-            ? regionPreview.anchor
+          const anchor = preview?.kind === 'region' && preview.legId === leg.id
+            ? preview.anchor
             : regionAnchorFromCore(leg.anchor);
           // Whether any of the outline is actually on screen, collected as it was projected. The
           // projection itself is deliberately not told about visibility, so that being off screen
@@ -1293,10 +1271,10 @@ export class ViewLeaderRuntime {
         // A handle being dragged overrides where the leader would otherwise point. Regions are
         // excluded, because their attachment point is worked out from the outline after the label
         // is placed, so an override here would be thrown away regardless.
-        if (anchorPreview?.legId === leg.id) {
+        if (preview?.kind === 'anchor' && preview.legId === leg.id) {
           return [{
             id: leg.id,
-            anchor: anchorPreview.at,
+            anchor: preview.at,
             worldPoint: resolved.worldPoint,
             route,
           }];
@@ -1321,8 +1299,8 @@ export class ViewLeaderRuntime {
 
     const placementInputs: PlacementInput[] = candidates.map((candidate) => {
       const override = this.#activeViewOverrides[candidate.annotation.id]?.placement;
-      const preview = this.#placementPreview?.id === candidate.annotation.id
-        ? this.#placementPreview
+      const preview = this.#preview?.kind === 'placement' && this.#preview.id === candidate.annotation.id
+        ? this.#preview
         : undefined;
       // A drag in progress beats both the saved position and any saved view's override. It is
       // where the user is pointing right now, and it only becomes one of the others on release.
@@ -1349,7 +1327,7 @@ export class ViewLeaderRuntime {
     // outline, otherwise the last outline that worked.
     const frame = resolveLayoutFrame({
       layoutFrame: this.#document.document.layoutFrame ?? null,
-      worldBounds: this.#host.modelBounds() ?? null,
+      worldBounds: observedWorldBounds === undefined ? this.#host.modelBounds() : observedWorldBounds,
       project: (point) => this.#host.project(point, viewport)?.point ?? null,
       viewport: { width: viewport.width, height: viewport.height },
       memory: this.#boundaryMemory,
@@ -1359,13 +1337,118 @@ export class ViewLeaderRuntime {
     //
     // A second algorithm would mean that gaining or losing the model outline midway through an
     // orbit swapped algorithms and moved every label at once.
+    const modelFrame = projectedModel?.status === 'available' ? projectedModel.bounds : undefined;
+    const protection = this.#keepLabelsOutsideModel ? modelFrame : undefined;
+    const arrangementFrame = modelFrame === undefined ? frame ?? anchorCloudFrame(placementInputs)
+      : enclosingBounds(modelFrame, this.#document.document.layoutFrame === undefined ? undefined : frame);
     const byPlacement = this.#placeAroundFrame(
       placementInputs,
-      frame ?? anchorCloudFrame(placementInputs),
+      arrangementFrame,
       viewportBounds,
     );
-    this.#separate(byPlacement, placementInputs, viewportBounds);
-    this.#applyLayoutSnap(byPlacement, placementInputs);
+    const organized = new Map<string, OrganizationPlan>();
+    const fixedRoutePlans = new Map<string, { proposal: LandingProposal; routes: ReturnType<typeof routeLegs> }>();
+    if (this.#placementMode === 'quadrants' && (!this.#keepLabelsOutsideModel || modelFrame !== undefined)) {
+      // Manual routes, region attachments, and pinned work retain their authored behavior. Their
+      // final label boxes and routes are obstacles for the annotations that can organize freely.
+      const candidatesById = new Map(candidates.map((candidate) => [candidate.annotation.id, candidate]));
+      const inputsById = new Map(placementInputs.map((input) => [input.id, input]));
+      const eligible = new Set(placementInputs.filter((input) => input.placement.kind === 'automatic' && !input.locked)
+        .filter((input) => {
+          const candidate = candidatesById.get(input.id)!;
+          return candidate.legs.every((leg) => leg.route.mode !== 'manual' && leg.region === undefined);
+        }).map((input) => input.id));
+      const fixed = new Map([...byPlacement].filter(([id]) => !eligible.has(id)));
+      // Editing a route or locking it should not move its label back to an unrelated legacy
+      // slot. Retain its last organized home relative to the anchor until placement is manual.
+      for (const [id] of fixed) {
+        const remembered = this.#organizedPlacements.get(id);
+        const anchor = this.#anchorOrigins.get(id);
+        if (remembered !== undefined && anchor !== undefined && inputsById.get(id)?.placement.kind === 'automatic') {
+          const bounds = { ...fixed.get(id)!,
+            x: remembered.bounds.x + (anchor.x - remembered.anchor.x),
+            y: remembered.bounds.y + (anchor.y - remembered.anchor.y) };
+          fixed.set(id, bounds);
+          this.#organizedPlacements.set(id, { bounds, anchor });
+        }
+      }
+      if (protection !== undefined) this.#constrainOutside(fixed, protection);
+      // Plan fixed routes once, including text baselines and their remembered attachment. The
+      // planner must avoid the same geometry that is eventually drawn, not a midpoint surrogate.
+      const fixedRoutes = candidates.filter((candidate) => fixed.has(candidate.annotation.id)).flatMap((candidate) => {
+        const id = candidate.annotation.id;
+        const result = this.#previewRoutes(candidate, fixed.get(id)!, [...fixed]
+          .filter(([otherId]) => otherId !== id).map(([, box]) => box));
+        fixedRoutePlans.set(id, result);
+        return result.routes.map((leg) => leg.points);
+      });
+      const plans = this.#organizationPlanner.plan(candidates.filter((candidate) => eligible.has(candidate.annotation.id)).map((candidate) => {
+        const textLines = textLineOffsets(candidate.layout);
+        return {
+          id: candidate.annotation.id,
+          labelSize: candidate.layout.bounds,
+          legs: candidate.legs.map((leg) => ({ id: leg.id, anchor: leg.anchor })),
+          landing: { ...candidate.style.landing, ...(textLines === undefined ? {} : { textLines }) },
+        };
+      }), {
+        modelBounds: arrangementFrame,
+        // Previously visible automatic annotations reserve their slots while temporarily outside
+        // the frustum. Deleted, manually placed, or locked annotations release that reservation.
+        reserveIds: new Set(document.annotations.filter((annotation) => {
+          const override = this.#activeViewOverrides[annotation.id]?.placement;
+          const routePreview = this.#preview?.kind === 'route' && this.#preview.id === annotation.id;
+          const automatic = override?.mode === 'automatic'
+            || (override?.mode !== 'manual' && annotation.placement.kind === 'automatic');
+          return automatic && !annotation.locked && this.#activeViewOverrides[annotation.id]?.visible !== false
+            && annotation.anchors.every((leg) => leg.routing.kind !== 'manual' && leg.anchor.kind !== 'region')
+            && (routePreview || inputsById.get(annotation.id) === undefined || eligible.has(annotation.id));
+        }).map((annotation) => annotation.id)),
+        ...(this.#preview?.kind === 'route' ? { suspendedIds: new Set([this.#preview.id]) } : {}),
+        obstacles: [...fixed.values()],
+        routes: fixedRoutes,
+        ...(this.#snap === undefined ? {} : { snap: (position: Vec2, input: OrganizationInput) =>
+          this.applySnap(position, { id: input.id, labelSize: input.labelSize, anchor: centroid(input.legs.map((leg) => leg.anchor)) }) }),
+      });
+      byPlacement.clear();
+      for (const [id, bounds] of fixed) byPlacement.set(id, bounds);
+      for (const plan of plans) {
+        organized.set(plan.id, plan);
+        byPlacement.set(plan.id, {
+          x: plan.bounds.min.x, y: plan.bounds.min.y,
+          width: plan.bounds.max.x - plan.bounds.min.x, height: plan.bounds.max.y - plan.bounds.min.y,
+        });
+        const anchor = this.#anchorOrigins.get(plan.id);
+        if (anchor !== undefined) this.#organizedPlacements.set(plan.id, { bounds: byPlacement.get(plan.id)!, anchor });
+        if (plan.conflicts > 0 && !this.#reportedOrganizationConflicts.has(plan.id)) {
+          this.#reportedOrganizationConflicts.add(plan.id);
+          this.#publishDiagnostic({ code: 'ORGANIZATION_CONFLICT', severity: 'warning', annotationId: plan.id,
+            message: 'Some label or leader conflicts could not be resolved within the quadrant layout.' });
+        } else if (plan.conflicts === 0) this.#reportedOrganizationConflicts.delete(plan.id);
+      }
+    } else {
+      this.#separate(byPlacement, placementInputs, viewportBounds);
+      this.#applyLayoutSnap(byPlacement, placementInputs);
+      if (protection !== undefined) {
+        this.#constrainOutside(byPlacement, protection);
+        this.#separate(byPlacement, placementInputs, viewportBounds, protection);
+      }
+    }
+    if (this.#keepLabelsOutsideModel && modelFrame === undefined) {
+      // An old frame or an anchor cloud cannot certify current model clearance. Retain the
+      // document, but withhold annotations until a current safe model rectangle is available.
+      byPlacement.clear();
+      const status = projectedModel?.status ?? 'unavailable';
+      if (status !== this.#outsideBoundsStatus) this.#publishDiagnostic({
+        code: 'MODEL_BOUNDS_UNAVAILABLE', severity: 'warning',
+        message: 'Outside-only labels are hidden until model bounds and safe bounds projection are available.',
+      });
+      this.#outsideBoundsStatus = status;
+    } else this.#outsideBoundsStatus = undefined;
+    // Keep off-screen labels and hit targets inside the viewer's visible area. Insets clip the
+    // annotation layer too, so strict off-screen placement cannot draw over host chrome.
+    this.#overlay.element.style.overflow = modelAware ? 'hidden' : 'visible';
+    this.#overlay.element.style.clipPath = modelAware && this.#viewportInsets !== undefined
+      ? `inset(${this.#viewportInsets.top}px ${this.#viewportInsets.right}px ${this.#viewportInsets.bottom}px ${this.#viewportInsets.left}px)` : '';
     this.#forgetDeletedAnnotations();
 
     // Every other label is something the leaders must route around. Built once for the whole frame
@@ -1381,30 +1464,17 @@ export class ViewLeaderRuntime {
     for (const candidate of candidates) {
       const bounds = byPlacement.get(candidate.annotation.id);
       if (bounds === undefined) continue;
-      const inputs: RouteLegInput[] = candidate.legs.map((leg) => ({
-        id: leg.id,
-        // Where a leader meets a region depends on where its label ended up, so it is worked out
-        // here rather than earlier. Only the point is needed — the arrowhead takes its direction
-        // from the line itself.
-        anchor: leg.region === undefined ? leg.anchor : regionAttachment(leg.region, bounds).point,
-        route: leg.route,
-      }));
-      const textLines = textLineOffsets(candidate.layout);
-      const hint = this.#placerHints.get(candidate.annotation.id);
       const obstacles = obstaclesFor(candidate.annotation.id);
-      const routes = routeLegs(inputs, bounds, {
-        ...candidate.style.landing,
-        ...(textLines === undefined ? {} : { textLines }),
-        // Which edge the leader meets is taken from the arrangement, which knows what column or
-        // row the label ended up in and therefore which of its faces looks at the model.
-        //
-        // Only ever replaces an automatic choice. A drafter who wrote `side: 'left'` meant it, and
-        // the layout does not get to overrule them.
-        ...(hint !== undefined && (candidate.style.landing?.side ?? 'auto') === 'auto'
-          ? { side: hint.connectionEdge }
-          : {}),
-        ...(hint?.overflowElbow === undefined ? {} : { overflowElbow: hint.overflowElbow }),
-      }, { obstacles });
+      const organizedRoutes = organized.get(candidate.annotation.id)?.legs;
+      const routePlan = organizedRoutes === undefined
+        ? fixedRoutePlans.get(candidate.annotation.id) ?? this.#previewRoutes(candidate, bounds, obstacles)
+        : undefined;
+      const routes = organizedRoutes ?? routePlan!.routes;
+      // A drag preview is provisional, just like the planner's rejected candidates. Canceling it
+      // must leave the accepted attachment intact.
+      if (routePlan !== undefined && this.#preview?.id !== candidate.annotation.id) {
+        this.#landingStability.commit(candidate.annotation.id, routePlan.proposal);
+      }
       const routeById = new Map(routes.map((route) => [route.id, route.points]));
       const legs = candidate.legs.flatMap((leg) => {
         const points = routeById.get(leg.id);
@@ -1473,14 +1543,14 @@ export class ViewLeaderRuntime {
     this.#diagnosticListeners.clear();
     this.#diagnostics.length = 0;
     this.#selected.clear();
-    this.#placementPreview = undefined;
-    this.#anchorPreview = undefined;
-    this.#routePreview = undefined;
-    this.#regionPreview = undefined;
-    this.#inkPreview = undefined;
+    this.#preview = undefined;
     this.#selectedInk.clear();
     this.#lastInk = Object.freeze([]);
     this.#anchorOrigins.clear();
+    this.#organizedPlacements.clear();
+    this.#landingStability.clear();
+    this.#labelPlacer.forget(new Set());
+    this.#organizationPlanner.forget(new Set());
     this.#layoutCache.clear();
     this.#imageOwners.clear();
     this.#hoveredId = null;
@@ -1652,7 +1722,8 @@ export class ViewLeaderRuntime {
     return this.#document.document.ink.flatMap((value): PlannedInk[] => {
       try {
         const stored = inkFromJson(value);
-        const ink = this.#inkPreview?.id === stored.id ? this.#inkPreview.ink : stored;
+        const preview = this.#preview;
+        const ink = preview?.kind === 'ink' && preview.id === stored.id ? preview.ink : stored;
         const projected = projectInk(ink, (worldPoint) => visibleProjection(this.#host, worldPoint, viewport));
         if (projected === undefined || projected.points.length < 2) return [];
         return [{
@@ -1671,6 +1742,12 @@ export class ViewLeaderRuntime {
   }
 
   #onDocumentCommit(commit: DocumentCommit): void {
+    if (commit.kind === 'replacement') {
+      this.#landingStability.clear();
+      this.#labelPlacer.forget(new Set());
+      this.#organizationPlanner.forget(new Set());
+      this.#organizedPlacements.clear();
+    }
     const ids = new Set(commit.document.annotations.map(({ id }) => id));
     for (const id of this.#layoutCache.keys()) if (!ids.has(id)) this.#layoutCache.delete(id);
     for (const id of this.#selected) if (!ids.has(id)) this.#selected.delete(id);

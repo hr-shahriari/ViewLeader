@@ -77,7 +77,7 @@ interface ActiveSession {
   readonly promise: Promise<AuthoringOutcome>;
   readonly lease?: InteractionLease;
   readonly restoreFocus?: HTMLElement;
-  readonly cleanup: (() => void)[];
+  readonly listeners: AbortController;
   pick: AbortController | undefined;
   preview: AuthoringPreview | null;
   anchor: Anchor | undefined;
@@ -89,6 +89,7 @@ export class AuthoringController {
   readonly #boundary: Element;
   readonly #document: DocumentEngine;
   readonly #runtime: ViewLeaderRuntime;
+  readonly #preempt: () => void;
   readonly #picking: AccuratePickingAdapter | undefined;
   readonly #statusElement: HTMLDivElement;
   readonly #listeners = new Set<() => void>();
@@ -99,10 +100,16 @@ export class AuthoringController {
   #status = 'Authoring inactive';
   #disposed = false;
 
-  public constructor(boundary: Element, document: DocumentEngine, runtime: ViewLeaderRuntime) {
+  public constructor(
+    boundary: Element,
+    document: DocumentEngine,
+    runtime: ViewLeaderRuntime,
+    preempt: () => void,
+  ) {
     this.#boundary = boundary;
     this.#document = document;
     this.#runtime = runtime;
+    this.#preempt = preempt;
     this.#picking = runtime.adapters.picking;
     this.#statusElement = boundary.ownerDocument.createElement('div');
     this.#statusElement.dataset.viewleaderStatus = '';
@@ -154,7 +161,7 @@ export class AuthoringController {
   }
 
   public start(options: StartAuthoringOptions): Promise<AuthoringOutcome> {
-    this.cancel('preempted');
+    this.#preempt();
     this.#sequence += 1;
     let resolve!: (outcome: AuthoringOutcome) => void;
     const promise = new Promise<AuthoringOutcome>((settle) => { resolve = settle; });
@@ -179,7 +186,7 @@ export class AuthoringController {
       promise,
       ...(lease === undefined ? {} : { lease }),
       ...(isHtmlElement(activeElement) ? { restoreFocus: activeElement } : {}),
-      cleanup: [],
+      listeners: new AbortController(),
       pick: undefined,
       preview: options.anchor === undefined ? null : { anchor: options.anchor },
       anchor: options.anchor,
@@ -414,19 +421,13 @@ export class AuthoringController {
     };
     if (session.multiPoint) {
       const doubleClick = (): void => { if (this.#active === session) this.finish(); };
-      this.#boundary.addEventListener('dblclick', doubleClick);
-      session.cleanup.push(() => this.#boundary.removeEventListener('dblclick', doubleClick));
+      this.#boundary.addEventListener('dblclick', doubleClick, { signal: session.listeners.signal });
     }
-    this.#boundary.addEventListener('pointermove', pointerMove);
-    this.#boundary.addEventListener('pointerdown', pointerDown);
-    this.#boundary.addEventListener('pointerleave', pointerLeave);
-    this.#boundary.ownerDocument.addEventListener('keydown', keyDown);
-    session.cleanup.push(
-      () => this.#boundary.removeEventListener('pointermove', pointerMove),
-      () => this.#boundary.removeEventListener('pointerdown', pointerDown),
-      () => this.#boundary.removeEventListener('pointerleave', pointerLeave),
-      () => this.#boundary.ownerDocument.removeEventListener('keydown', keyDown),
-    );
+    const { signal } = session.listeners;
+    this.#boundary.addEventListener('pointermove', pointerMove, { signal });
+    this.#boundary.addEventListener('pointerdown', pointerDown, { signal });
+    this.#boundary.addEventListener('pointerleave', pointerLeave, { signal });
+    this.#boundary.ownerDocument.addEventListener('keydown', keyDown, { signal });
   }
 
   #fail(active: ActiveSession, error: ViewLeaderError): void {
@@ -444,7 +445,7 @@ export class AuthoringController {
     this.#active = undefined;
     active.pick?.abort();
     active.pick = undefined;
-    for (const cleanup of active.cleanup.splice(0)) cleanup();
+    active.listeners.abort();
     try { active.lease?.release(); } catch { /* lease ownership has still ended */ }
     active.resolve(outcome);
     this.#announce(status);

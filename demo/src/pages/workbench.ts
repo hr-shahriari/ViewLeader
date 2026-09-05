@@ -8,6 +8,7 @@ import { exportVectorSheet } from 'viewleader/interchange';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
+import { mountOrganizationControls } from '../shared/organizationControls';
 import {
   createExampleHarness,
   createViewerStateAdapter,
@@ -42,6 +43,7 @@ try {
   leader.update();
 
   const bar = createControlBar();
+  const organizationControls = mountOrganizationControls(bar, leader, (message) => bar.status(message));
   // What each policy does to a leg that is behind the building. `fade` is keyed to the WHOLE
   // annotation being buried, so its wording says "every leg" rather than promising a dimming a note
   // with a leg still in view will not show — nearly every note here has exactly one leg, which is
@@ -179,6 +181,7 @@ try {
     crowd.disabled = true;
     badge.disabled = true;
     sheet.disabled = true;
+    organizationControls.disabled(true);
     bar.status('Disposed — no ViewLeader-owned resources remain in the boundary.');
   });
   bar.status('One runtime, many capabilities. Compose a review, then dispose it.');

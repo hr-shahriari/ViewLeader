@@ -11,8 +11,8 @@
 //   2. ANCHORS ARE IFC GlobalIds. `pick` below resolves the clicked mesh to its GlobalId and returns
 //      an ELEMENT anchor, not a world point — so a leader survives the model being hidden, reloaded
 //      or re-exported, and the saved document is meaningful outside this page.
-//   3. CHROME OWNS THREE EDGES. Two docked panels, handed to `setViewportInsets`, so no label is
-//      ever laid out underneath them.
+//   3. MODEL-AWARE ORGANIZATION. Two docked panels expose viewer controls. Strict model clearance
+//      wins when zoom leaves no room for labels beside the model; Fit model restores that room.
 //
 // The boundary is #viewport, not the harness overlay div: the overlay is `pointer-events: none`, so
 // listeners on it would only ever fire over an annotation. Same reasoning as `/leader-editor/`.
@@ -24,6 +24,7 @@ import {
   type AnnotationContent,
   type AnnotationDraft,
   type AnnotationRouting,
+  type ProjectedBoundsResult,
   type StyleOverride,
   type Vec2,
 } from 'viewleader';
@@ -42,6 +43,7 @@ import {
   markExampleReady,
 } from '../shared/harness';
 import { loadIfcModel, type IfcModel } from '../shared/ifcModel';
+import { mountOrganizationControls } from '../shared/organizationControls';
 import {
   appendLeg,
   bindEditingKeys,
@@ -62,6 +64,12 @@ const ROUTING_MODES = ['dogleg', 'straight', 'orthogonal'] as const;
 // fourth word to stay honest about a leg a dragged route grip bent by hand. Not a real mode: it is
 // offered only when it is already true.
 const MANUAL_ROUTING = 'manual';
+
+declare global {
+  interface Window {
+    ifcStudioOrganization?: { bounds(): ProjectedBoundsResult };
+  }
+}
 
 try {
   const viewport = document.querySelector<HTMLElement>('#viewport');
@@ -101,33 +109,38 @@ try {
     invalidations,
   );
 
+  const adapters = createThreeAdapter({
+    camera: harness.camera,
+    renderer: harness.renderer,
+    resolveElement,
+    elementInvalidations: invalidations,
+    modelBounds: () => model === undefined ? [] : [model.root],
+    // This example loads one immutable geometry tree. Visibility and camera changes do not
+    // change the full model bounds, so avoid traversing the IFC on every idle animation frame.
+    modelBoundsRevision: () => model === undefined ? 0 : 1,
+    // 0.25 m, in model units — Duplex is metric. An element anchor resolves to the CENTRE of the
+    // element's bounds, so the ray reaches that element's own near face before the point it is
+    // aiming at: half a 300 mm wall is 150 mm, half a 400 mm floor slab is 200 mm. On the
+    // adapter's 0.1 mm default every one of those reads as "occluded by the thing it points at"
+    // and the leaders draw permanently dashed. A real verdict here — an anchor on the far side of
+    // the building — misses by metres, so an allowance this wide has nothing left to swallow.
+    occlusion: { objects: () => model === undefined ? [] : [model.root], epsilon: 0.25 },
+    pick,
+    pickSurface,
+    // Core takes an interaction lease for the length of a gesture and this adapter disables
+    // OrbitControls while it is held, so an edit and an orbit can never run at once.
+    controls: harness.controls,
+  });
   const leader = new ViewLeader({
     boundary: viewport,
-    adapters: createThreeAdapter({
-      camera: harness.camera,
-      renderer: harness.renderer,
-      resolveElement,
-      elementInvalidations: invalidations,
-      modelBounds: () => model === undefined ? [] : [model.root],
-      // 0.25 m, in model units — Duplex is metric. An element anchor resolves to the CENTRE of the
-      // element's bounds, so the ray reaches that element's own near face before the point it is
-      // aiming at: half a 300 mm wall is 150 mm, half a 400 mm floor slab is 200 mm. On the
-      // adapter's 0.1 mm default every one of those reads as "occluded by the thing it points at"
-      // and the leaders draw permanently dashed. A real verdict here — an anchor on the far side of
-      // the building — misses by metres, so an allowance this wide has nothing left to swallow.
-      occlusion: { objects: () => model === undefined ? [] : [model.root], epsilon: 0.25 },
-      pick,
-      pickSurface,
-      // Core takes an interaction lease for the length of a gesture and this adapter disables
-      // OrbitControls while it is held, so an edit and an orbit can never run at once.
-      controls: harness.controls,
-    }),
+    adapters,
     // `marquee: 'modifier'` asks for the rubber band on a shift- or alt-drag only. A marquee on
     // every plain left-press would take the interaction lease, which the adapter turns into
     // `controls.enabled = false`, killing left-drag orbit on a page whose subject is direct
     // manipulation.
     editing: { gestures: true, marquee: 'modifier' },
   });
+  leader.setPlacementMode('quadrants');
 
   // --- Chrome ----------------------------------------------------------------------------------
   const panel = createSidePanel({ title: 'Inspector' });
@@ -174,6 +187,25 @@ try {
   panel.element.addEventListener('panel-error', (event) => {
     say((event as CustomEvent<string>).detail);
   });
+
+  const organization = panel.section('Organization');
+  const organizationControls = mountOrganizationControls(organization, leader, say);
+  organizationControls.disabled(true);
+  const viewButtons = [
+    organization.button('Fit model', () => {
+      fitModel();
+      say('Fit view: drag slowly, reverse, and release to inspect leader stability.');
+    }),
+    organization.button('Side view', () => {
+      fitModel(new THREE.Vector3(1, 0.35, 0));
+      say('Side view: leaders organize outside the full model, including its depth.');
+    }),
+    organization.button('Rear view', () => {
+      fitModel(new THREE.Vector3(-0.72, 0.52, -0.9));
+      say('Rear view: hidden leaders fade and dash; their labels stay readable.');
+    }),
+  ];
+  for (const button of viewButtons) button.disabled = true;
 
   const selectedIds = (): readonly string[] => leader.annotations.getSnapshot().selectedIds;
   const selectedId = (): string | undefined => selectedIds()[0];
@@ -537,25 +569,83 @@ try {
   leader.update();
 
   exposeExampleManager(leader);
+  window.ifcStudioOrganization = {
+    bounds: () => {
+      const bounds = adapters.modelBounds?.get() ?? null;
+      return bounds === null ? { status: 'empty' }
+        : adapters.projection.projectBounds!(bounds, adapters.projection.getViewport());
+    },
+  };
   // Ready before the parse, deliberately. Two notes are already on screen and the overlay is live;
   // waiting on a multi-megabyte IFC would make readiness mean "the host finished loading", which is
   // not what this attribute is for and would put a several-second parse inside every e2e timeout.
   requestAnimationFrame(() => markExampleReady());
 
   // --- The model ---------------------------------------------------------------------------------
-  const frame = (box: THREE.Box3): void => {
+  const frame = (box: THREE.Box3, direction = new THREE.Vector3(0.72, 0.52, 0.9)): void => {
     if (box.isEmpty()) return;
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1);
     const distance = radius / Math.sin((harness.camera.fov * Math.PI) / 360);
     harness.camera.position.copy(centre).add(
-      new THREE.Vector3(0.72, 0.52, 0.9).normalize().multiplyScalar(distance),
+      direction.clone().normalize().multiplyScalar(distance),
     );
     harness.camera.near = Math.max(distance / 1000, 0.01);
     harness.camera.far = distance * 10;
     harness.camera.updateProjectionMatrix();
     harness.controls.target.copy(centre);
     harness.controls.update();
+  };
+
+  const fitModel = (direction?: THREE.Vector3): void => {
+    if (model === undefined) return;
+    const world = new THREE.Box3().setFromObject(model.root);
+    frame(world, direction);
+    const viewportRect = viewport.getBoundingClientRect();
+    const available = {
+      left: tree.getBoundingClientRect().right - viewportRect.left + BREATHING_ROOM,
+      right: panel.element.getBoundingClientRect().left - viewportRect.left - BREATHING_ROOM,
+      top: BREATHING_ROOM,
+      bottom: viewportRect.height - BREATHING_ROOM,
+    };
+    // Fit the rendered footprint, since text keeps its pixel size as the model shrinks. A sphere
+    // fit alone can put every outside label behind the inspector. Only explicit view presets move
+    // the camera this way; ordinary zoom/orbit still permits labels to leave the screen.
+    // The pass is bounded for narrow windows or authored obstacles that cannot fit at any zoom.
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      leader.update();
+      const projected = adapters.projection.projectBounds!(world, adapters.projection.getViewport());
+      if (projected.status !== 'available') break;
+      const labels = leader.annotations.getSnapshot().annotations.flatMap((annotation) => {
+        if (annotation.placement.kind !== 'automatic' || annotation.locked) return [];
+        const geometry = leader.geometry.of(annotation.id);
+        return geometry === undefined ? [] : [geometry.label];
+      });
+      const minX = Math.min(projected.bounds.min.x, ...labels.map((label) => label.x));
+      const maxX = Math.max(projected.bounds.max.x, ...labels.map((label) => label.x + label.width));
+      const minY = Math.min(projected.bounds.min.y, ...labels.map((label) => label.y));
+      const maxY = Math.max(projected.bounds.max.y, ...labels.map((label) => label.y + label.height));
+      const ratio = Math.max((maxX - minX) / Math.max(1, available.right - available.left),
+        (maxY - minY) / Math.max(1, available.bottom - available.top));
+      if (ratio > 1) {
+        // A small margin prevents the next layout's text spacing from landing on the panel edge.
+        harness.camera.position.sub(harness.controls.target).multiplyScalar(ratio * 1.05).add(harness.controls.target);
+        harness.camera.far = Math.max(harness.camera.far, harness.camera.position.distanceTo(harness.controls.target) * 10);
+        harness.camera.updateProjectionMatrix();
+      } else {
+        const dx = (minX + maxX - available.left - available.right) / 2;
+        const dy = (minY + maxY - available.top - available.bottom) / 2;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break;
+        const unitsPerPixel = 2 * harness.camera.position.distanceTo(harness.controls.target)
+          * Math.tan(THREE.MathUtils.degToRad(harness.camera.fov / 2)) / viewportRect.height;
+        const offset = new THREE.Vector3().setFromMatrixColumn(harness.camera.matrixWorld, 0).multiplyScalar(dx * unitsPerPixel)
+          .addScaledVector(new THREE.Vector3().setFromMatrixColumn(harness.camera.matrixWorld, 1), -dy * unitsPerPixel);
+        harness.camera.position.add(offset);
+        harness.controls.target.add(offset);
+      }
+      harness.controls.update();
+    }
+    leader.update();
   };
 
   const NAME_LIMIT = 30;
@@ -683,7 +773,14 @@ try {
         }
       });
 
-      leader.update();
+      // Strict placement needs current model bounds. Keep the introductory notes visible while
+      // the worker loads, then enable the outside policy together with its inspector controls.
+      leader.setKeepLabelsOutsideModel(true);
+      organizationControls.keepOutside.checked = true;
+      organizationControls.disabled(false);
+      for (const button of viewButtons) button.disabled = false;
+      fitModel();
+      document.body.dataset['ifcLoaded'] = '1';
       say(`Duplex loaded — ${loaded.groups.length} IFC classes. Pick a tool, then click an element.`);
     })
     .catch((error: unknown) => {
@@ -691,6 +788,7 @@ try {
       // against an empty scene. Say what happened in the panel, never on the console — the e2e suite
       // fails a page on a console error, and a missing fixture is a host problem, not a core one.
       treeEmpty.textContent = 'The model could not be loaded.';
+      document.body.dataset['ifcLoaded'] = 'error';
       say(`IFC load failed: ${error instanceof Error ? error.message : String(error)}`);
     });
 } catch (error) {

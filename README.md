@@ -87,6 +87,64 @@ renderer.setAnimationLoop(() => {
 7. **`dispose()` on unmount.** It removes the overlay and every listener. Nothing you passed in is
    touched — no renderer disposed, no camera moved, no scene changed.
 
+### Organizing leaders around a model
+
+```js
+// The Three adapter's modelBounds callback chooses one model or group to organize around.
+leader.setPlacementMode("quadrants");
+leader.setKeepLabelsOutsideModel(true);
+```
+
+Quadrant routing gives anchors near the left/right edges short side exits. When side slots or
+routes conflict, deeper anchors escape above or below the model and turn outward through ordered
+lanes. When rotation compresses anchors into a narrow strip near one side, crowded labels form a
+compact column: their leaders leave that side horizontally and spread toward the labels outside
+the model. Label sizes, other labels, and already planned routes influence the choice.
+
+During rotation, leaders remember their text-line attachment and the relative allocation of
+near-equal anchors. Small camera movements keep those choices stable; larger movements or changed
+space can still rearrange labels. Anchors continue following the model every frame, including
+camera damping after a drag. This continuity also applies to automatic side and row placement.
+The memory is temporary and is cleared when annotations are deleted or a document is replaced.
+
+`setKeepLabelsOutsideModel(true)` also works with `sides`, `rows`, and `auto`. It keeps the whole
+label outside the current model rectangle even at close zoom: labels can leave the viewport and
+are clipped instead of being pushed back over the model. An anchor's line still starts inside the
+rectangle when its target is inside. A drawn layout frame cannot shrink this protected area.
+
+Both controls are viewer settings. They do not rewrite the document or add undo steps. Manual
+and locked label positions are temporarily constrained for display when strict placement is on;
+their stored positions return when it is off. Manual leader bends and region attachments retain
+their existing routing. Host snaps that break an organized route's clearance or cause conflicts
+are ignored. `ORGANIZATION_CONFLICT` diagnostics report unresolved constraints; coincident
+anchors and authored obstacles can prevent a completely crossing-free layout.
+
+Strict placement requires `modelBounds` and `projection.projectBounds`. The Three adapter supplies
+both when given a `modelBounds` callback, including safe projection across the camera near plane.
+The rectangle encloses the entire supplied 3D model or group at every camera angle, including its
+depth; it is not calculated from the annotated face or anchor points.
+Other hosts implement `projectBounds` with an unclipped, finite rectangle and an `available`,
+`empty`, or `unavailable` status. If current safe bounds are unavailable, strict mode withholds
+labels and reports `MODEL_BOUNDS_UNAVAILABLE`; it never substitutes stale bounds. Without strict
+placement, quadrant routing can fall back to a drawn frame or the anchors' bounds.
+
+Bounds are polled during `update()` in these modes so a moving model refreshes even with a
+stationary camera. Large scenes can supply `modelBoundsRevision: () => sceneRevision` to the Three
+adapter (or `modelBounds.getRevision()` in another host) to cache bounds until that revision changes.
+Increment it whenever the target objects, geometry, or transforms change.
+
+Try `/organized-leaders/` for the four-quadrant example, side/rear views, and close-zoom controls.
+That example also enables the Three adapter's `occlusion: { objects: () => [model] }` option:
+hidden anchors get faded, dashed leader lines while the default `keep` policy leaves labels readable.
+Leader Editor and Workbench also expose both settings. Use `setPlacementMode("auto")` and
+`setKeepLabelsOutsideModel(false)` to return to the default behavior.
+
+`/ifc-studio/` enables quadrant routing and outside-only placement for the loaded IFC. Its
+Organization inspector provides the same controls plus fit, side, and rear views. Hidden leaders
+fade and dash while labels remain readable; close zoom can put labels offscreen.
+In either example, orbit slowly, reverse direction, and release to inspect the final damping frames.
+Switch between Automatic and Quadrant routing to compare both arrangements.
+
 ### Exporting a sheet
 
 The overlay's current frame, as a standalone SVG with paper, a title block and an optional picture
@@ -121,7 +179,7 @@ would be a broken link everywhere it is opened — and would taint the canvas on
 
 ### Examples
 
-Seventeen of them — element anchoring, markup, saved views and tours, BCF round-trip, occlusion,
+Eighteen of them — model-aware organization, element anchoring, markup, saved views and tours, BCF round-trip, occlusion,
 drafting styles, direct editing, React and Vue.
 
 Can be viewed here [Example page](https://hr-shahriari.github.io/ViewLeader/)

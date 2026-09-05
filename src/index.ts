@@ -123,6 +123,7 @@ export type {
   OcclusionSample,
   ProjectedPoint,
   ProjectionAdapter,
+  ProjectedBoundsResult,
   ResolvedHostImage,
   SurfacePickResult,
   SurfacePickingAdapter,

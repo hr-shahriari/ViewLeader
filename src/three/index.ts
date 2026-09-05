@@ -40,6 +40,7 @@ import type {
   OcclusionSample,
   ProjectionAdapter,
   Unsubscribe,
+  Vec2,
   Vec3,
   ViewerStateAdapter,
   ViewportSnapshot,
@@ -151,9 +152,15 @@ export interface ThreeAdapterOptions {
    * The objects that make up "the model". A box around them is projected to the screen and labels
    * are kept outside it, so notes sit clear of the building instead of on top of it.
    *
-   * Asked for fresh every frame, so a host can add and remove objects freely.
+   * Polled on each requested layout pass unless `modelBoundsRevision` is supplied, so a host can
+   * add and remove objects freely without a second invalidation channel.
    */
   readonly modelBounds?: () => Iterable<Object3D>;
+  /**
+   * Return a cheap revision whenever the model-bounds target changes identity, transform, or
+   * geometry. It avoids recomputing every object's Box3 while the scene is stationary.
+   */
+  readonly modelBoundsRevision?: () => string | number;
   readonly viewerState?: ThreeViewerStateOptions;
 }
 
@@ -201,7 +208,7 @@ export function createThreeAdapter(options: ThreeAdapterOptions): HostAdapterBun
     : createThreeOcclusionAdapter(options.camera, options.occlusion);
   const modelBounds = options.modelBounds === undefined
     ? undefined
-    : createThreeModelBoundsAdapter(options.modelBounds);
+    : createThreeModelBoundsAdapter(options.modelBounds, options.modelBoundsRevision);
   const viewerState = options.viewerState === undefined
     ? undefined
     : createThreeViewerStateAdapter({
@@ -229,6 +236,7 @@ export function createThreeAdapter(options: ThreeAdapterOptions): HostAdapterBun
  */
 export function createThreeModelBoundsAdapter(
   objects: () => Iterable<Object3D>,
+  revision?: () => string | number,
 ): ModelBoundsAdapter {
   return Object.freeze({
     get(): ModelBounds | null {
@@ -247,6 +255,7 @@ export function createThreeModelBoundsAdapter(
         max: { x: box.max.x, y: box.max.y, z: box.max.z },
       };
     },
+    ...(revision === undefined ? {} : { getRevision: revision }),
   });
 }
 
@@ -352,6 +361,7 @@ function createProjectionAdapter(options: ThreeAdapterOptions): ProjectionAdapte
           projected.z >= -1 && projected.z <= 1,
       };
     },
+    projectBounds: (bounds, viewport) => projectThreeBounds(bounds, options.camera, viewport),
     ...(canvas === undefined
       ? {}
       : {
@@ -372,6 +382,79 @@ function createProjectionAdapter(options: ThreeAdapterOptions): ProjectionAdapte
           },
         }),
   };
+}
+
+const AABB_EDGES: readonly (readonly [number, number])[] = [
+  [0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7],
+];
+
+/**
+ * Projects the camera-facing portion of an AABB. A point behind a perspective camera has a
+ * mathematically finite screen coordinate, but it is a mirror of the point in front; only points
+ * in the camera clip slab and intersections of box edges with its near/far planes are valid here.
+ */
+function projectThreeBounds(
+  bounds: ModelBounds,
+  camera: Camera,
+  viewport: ViewportSnapshot,
+): { readonly status: 'available'; readonly bounds: { readonly min: Vec2; readonly max: Vec2 } } | { readonly status: 'empty' | 'unavailable' } {
+  if (!isOrderedModelBounds(bounds)) return { status: 'empty' };
+  if (!(camera instanceof PerspectiveCamera) && !(camera instanceof OrthographicCamera)) {
+    return { status: 'unavailable' };
+  }
+  camera.updateWorldMatrix(true, false);
+  const points = aabbCorners(bounds).map((point) => point.applyMatrix4(camera.matrixWorldInverse));
+  // The near plane is a valid perspective divide when `near > 0`; only the camera origin is
+  // singular. Keep exact clip-plane intersections so this rectangle never understates the model.
+  const frontZ = -camera.near;
+  const backZ = -camera.far;
+  const inside = (point: Vector3): boolean => point.z <= frontZ && point.z >= backZ;
+  const candidates: Vector3[] = [];
+  for (const point of points) if (inside(point)) candidates.push(point);
+  for (const [from, to] of AABB_EDGES) {
+    const start = points[from]!;
+    const end = points[to]!;
+    for (const planeZ of [frontZ, backZ]) {
+      const startDistance = start.z - planeZ;
+      const endDistance = end.z - planeZ;
+      if (startDistance === 0 || endDistance === 0 || startDistance * endDistance >= 0) continue;
+      const t = -startDistance / (endDistance - startDistance);
+      if (t >= 0 && t <= 1) candidates.push(start.clone().lerp(end, t));
+    }
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let any = false;
+  for (const cameraPoint of candidates) {
+    const clip = cameraPoint.clone().applyMatrix4(camera.projectionMatrix);
+    // Omitting an unrepresentable extremity would understate the protected area. Report that a
+    // strict rectangle is unavailable instead of turning a numeric overflow into a false promise.
+    if (!Number.isFinite(clip.x) || !Number.isFinite(clip.y)) return { status: 'unavailable' };
+    const x = (clip.x + 1) * viewport.width / 2;
+    const y = (1 - clip.y) * viewport.height / 2;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { status: 'unavailable' };
+    any = true;
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  return any ? { status: 'available', bounds: { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } } } : { status: 'empty' };
+}
+
+function aabbCorners(bounds: ModelBounds): Vector3[] {
+  const { min, max } = bounds;
+  return [
+    new Vector3(min.x, min.y, min.z), new Vector3(max.x, min.y, min.z),
+    new Vector3(min.x, max.y, min.z), new Vector3(max.x, max.y, min.z),
+    new Vector3(min.x, min.y, max.z), new Vector3(max.x, min.y, max.z),
+    new Vector3(min.x, max.y, max.z), new Vector3(max.x, max.y, max.z),
+  ];
+}
+
+function isOrderedModelBounds(bounds: ModelBounds): boolean {
+  return [bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z].every(Number.isFinite)
+    && bounds.min.x <= bounds.max.x && bounds.min.y <= bounds.max.y && bounds.min.z <= bounds.max.z;
 }
 
 function createElementAdapter(

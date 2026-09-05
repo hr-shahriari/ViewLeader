@@ -41,4 +41,5 @@ export const EXAMPLES: readonly ExampleRoute[] = [
   { dir: 'bcf', source: 'bcf.ts', label: 'BCF 2.1 round trip', input: 'bcf' },
   { dir: 'occlusion', source: 'occlusion.ts', label: 'Occlusion & hidden legs', input: 'occlusion' },
   { dir: 'ifc-studio', source: 'ifc-studio.ts', label: 'IFC studio', input: 'ifcStudio' },
+  { dir: 'organized-leaders', source: 'organized-leaders.ts', label: 'Model-aware organization', input: 'organizedLeaders' },
 ];

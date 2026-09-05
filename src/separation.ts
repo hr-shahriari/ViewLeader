@@ -33,6 +33,9 @@ interface SeparableLabel {
 interface SeparationOptions {
   readonly viewport: Readonly<{ width: number; height: number }>;
   readonly insets?: ViewportInsets;
+  /** Strict model clearance can require coordinates outside the visible viewport. */
+  readonly allowOffscreen?: boolean;
+  readonly constrain?: (label: SeparableLabel) => Readonly<{ x: number; y: number }>;
 }
 
 /** How much clear space to keep between two labels, in screen pixels. */
@@ -110,6 +113,11 @@ export function separateLabels(
 
   const viewport = options.viewport;
   const insets = options.insets ?? NO_INSETS;
+  const constrain = (rect: MutableRect): void => {
+    if (!options.allowOffscreen) clampToViewport(rect, viewport, insets);
+    const adjusted = options.constrain?.(rect);
+    if (adjusted !== undefined) { rect.x = adjusted.x; rect.y = adjusted.y; }
+  };
 
   // Each nudge is visible to the pairs checked after it, so the order labels are visited in
   // changes where they end up. That makes ordering a correctness question, twice over.
@@ -160,7 +168,7 @@ export function separateLabels(
 
   if (n === 1) {
     const rect = rects[0]!;
-    if (!rect.immovable) clampToViewport(rect, viewport, insets);
+    if (!rect.immovable) constrain(rect);
     return emit();
   }
 
@@ -255,7 +263,7 @@ export function separateLabels(
       if (r.immovable) continue;
       if (!Number.isFinite(r.x)) r.x = 0;
       if (!Number.isFinite(r.y)) r.y = 0;
-      clampToViewport(r, viewport, insets);
+      constrain(r);
     }
 
     if (!hadCollision) break;

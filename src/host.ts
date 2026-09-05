@@ -32,9 +32,29 @@ export interface ProjectedPoint {
   readonly visible: boolean;
 }
 
+/** An unclipped rectangle in overlay pixels, suitable for a model-clearance guarantee. */
+export interface ProjectedBounds {
+  readonly min: Vec2;
+  readonly max: Vec2;
+}
+
+/**
+ * The explicit result of projecting a model box. `unavailable` means this adapter cannot make a
+ * clipping-aware guarantee; it is deliberately distinct from an empty visible projection.
+ */
+export type ProjectedBoundsResult =
+  | { readonly status: 'available'; readonly bounds: ProjectedBounds }
+  | { readonly status: 'empty' | 'unavailable' };
+
 export interface ProjectionAdapter {
   getViewport(): ViewportSnapshot;
   project(point: Vec3, viewport: ViewportSnapshot): ProjectedPoint | null;
+  /**
+   * Projects a model AABB to a raw, unclipped overlay rectangle. Implementations that offer this
+   * must account for camera clipping, including boxes which cross the near plane. Without it,
+   * strict outside placement is unavailable rather than inferred from unsafe point projections.
+   */
+  projectBounds?(bounds: ModelBounds, viewport: ViewportSnapshot): ProjectedBoundsResult;
   /**
    * A cheap value that changes whenever the camera or viewport does.
    *
@@ -174,6 +194,12 @@ export interface ModelBounds {
  */
 export interface ModelBoundsAdapter {
   get(): ModelBounds | null;
+  /**
+   * A cheap value that changes whenever the target's identity, transform, or geometry changes.
+   * Supplying it lets ViewLeader reuse a copied box while the target is stationary; without it the
+   * adapter is polled on every requested layout pass.
+   */
+  getRevision?(): string | number;
 }
 
 export interface HostAdapterBundle {
@@ -227,6 +253,9 @@ export class HostIntegration {
   readonly #cleanups: Unsubscribe[] = [];
   #document: ViewLeaderDocument | undefined;
   #disposed = false;
+  #modelBoundsRevision: string | number | undefined;
+  #hasModelBoundsRevision = false;
+  #modelBoundsCache: ModelBounds | null = null;
 
   public constructor(
     adapters: HostAdapterBundle,
@@ -282,11 +311,54 @@ export class HostIntegration {
 
   /** Where the model is, or nothing if there is no model yet or the host gave an unusable box. */
   public modelBounds(): ModelBounds | null {
-    const bounds = this.#adapters.modelBounds?.get() ?? null;
-    if (bounds === null) return null;
+    const adapter = this.#adapters.modelBounds;
+    if (adapter === undefined) return null;
+    const revision = adapter.getRevision?.();
+    if (adapter.getRevision !== undefined) {
+      if ((typeof revision !== 'string' && typeof revision !== 'number')
+        || (typeof revision === 'number' && !Number.isFinite(revision))) {
+        throw new AdapterError('model bounds revision');
+      }
+      if (this.#hasModelBoundsRevision && Object.is(revision, this.#modelBoundsRevision)) {
+        return this.#modelBoundsCache;
+      }
+    }
+    const bounds = adapter.get();
     // Framing is a nicety, not a requirement. A host returning a broken box should cost the frame
-  // its layout rectangle, never bring down the drawing loop.
-    return isFiniteVec3(bounds.min) && isFiniteVec3(bounds.max) ? bounds : null;
+    // its layout rectangle, never bring down the drawing loop.
+    const copied = bounds === null || !isOrderedBounds(bounds) ? null : copyBounds(bounds);
+    if (adapter.getRevision !== undefined) {
+      // Commit only after `get` and validation succeed. If a transient host failure happened, the
+      // next call at this revision must retry rather than returning the prior revision's cache.
+      this.#hasModelBoundsRevision = true;
+      this.#modelBoundsRevision = revision!;
+      this.#modelBoundsCache = copied;
+    }
+    return copied;
+  }
+
+  /** A clipping-aware model rectangle, or an explicit reason strict placement cannot use one. */
+  public projectBounds(bounds: ModelBounds, viewport: ViewportSnapshot): ProjectedBoundsResult {
+    const projection = this.#adapters.projection;
+    const result: unknown = projection.projectBounds === undefined
+      ? { status: 'unavailable' as const }
+      : projection.projectBounds(bounds, viewport);
+    if (result === null || typeof result !== 'object' || !('status' in result)) {
+      throw new AdapterError('model bounds projection');
+    }
+    const projected = result as ProjectedBoundsResult;
+    if (projected.status !== 'available') {
+      if (projected.status === 'empty' || projected.status === 'unavailable') return projected;
+      throw new AdapterError('model bounds projection');
+    }
+    if (!isOrderedProjectedBounds(projected.bounds)) throw new AdapterError('model bounds projection');
+    return Object.freeze({
+      status: 'available',
+      bounds: Object.freeze({
+        min: Object.freeze({ ...projected.bounds.min }),
+        max: Object.freeze({ ...projected.bounds.max }),
+      }),
+    });
   }
 
   public project(point: Vec3, viewport: ViewportSnapshot): ProjectedPoint | null {
@@ -462,6 +534,31 @@ function elementKey(anchor: Extract<Anchor, { kind: 'element' }>): string {
 
 function isFiniteVec3(value: Vec3): boolean {
   return [value.x, value.y, value.z].every(Number.isFinite);
+}
+
+function isOrderedBounds(value: ModelBounds): boolean {
+  return isFiniteVec3(value.min) && isFiniteVec3(value.max)
+    && value.min.x <= value.max.x && value.min.y <= value.max.y && value.min.z <= value.max.z;
+}
+
+function copyBounds(value: ModelBounds): ModelBounds {
+  return Object.freeze({
+    min: Object.freeze({ ...value.min }),
+    max: Object.freeze({ ...value.max }),
+  });
+}
+
+function isOrderedProjectedBounds(value: unknown): value is ProjectedBounds {
+  if (value === null || typeof value !== 'object' || !('min' in value) || !('max' in value)) return false;
+  const { min, max } = value as { min: unknown; max: unknown };
+  return isFiniteVec2(min) && isFiniteVec2(max) && min.x <= max.x && min.y <= max.y;
+}
+
+function isFiniteVec2(value: unknown): value is Vec2 {
+  return value !== null && typeof value === 'object'
+    && 'x' in value && 'y' in value
+    && typeof value.x === 'number' && typeof value.y === 'number'
+    && Number.isFinite(value.x) && Number.isFinite(value.y);
 }
 
 function isAbortError(error: unknown): boolean {

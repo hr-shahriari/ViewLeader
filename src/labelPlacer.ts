@@ -7,14 +7,17 @@
 // Two rules shape almost everything here. Labels must stack in the same order as the things they
 // point at, or their leader lines cross. And a label must not jump to a different side of the model
 // just because the camera moved slightly, or the whole drawing appears to swim about.
-import type { Vec2 } from './types.js';
+import type { Bounds2 } from './frame.js';
+import { stabilizeTemporalOrder } from './temporal-order.js';
+import type { AnnotationPlacement, Vec2 } from './types.js';
 
 export type LabelSector = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 /**
  * How labels are arranged around the model: `sides` uses the left and right margins, `rows` the top
  * and bottom, and `auto` picks rows for a model clearly wider than it is tall.
+ * `quadrants` selects the joint label-and-route planner in the runtime.
  */
-export type PlacementMode = 'sides' | 'rows' | 'auto';
+export type PlacementMode = 'sides' | 'rows' | 'auto' | 'quadrants';
 export interface ViewportInsets {
   readonly top: number;
   readonly right: number;
@@ -23,6 +26,16 @@ export interface ViewportInsets {
 }
 
 export type ConnectionEdge = 'left' | 'right' | 'top' | 'bottom';
+
+export interface PlacementInput {
+  readonly id: string;
+  readonly projectedAnchors: readonly Vec2[];
+  readonly labelSize: Readonly<{ width: number; height: number }>;
+  readonly placement: AnnotationPlacement;
+  /** The user pinned this annotation. It still follows its anchor, but nothing may push it aside
+   *  to make room for something else. */
+  readonly locked?: boolean;
+}
 
 interface PlacementResult {
   annotationId: string;
@@ -76,6 +89,50 @@ const AUTO_ROWS_ASPECT = 2;
  * the entire arrangement on every frame.
  */
 const AUTO_ROWS_EXIT_MARGIN = 0.2;
+/**
+ * Projected depth advantage required before two labels exchange capacity priority.
+ *
+ * Projection noise is far below one CSS pixel, while a full pixel is already a visible movement
+ * toward the model edge. This absorbs numeric churn without delaying a deliberate orbit long
+ * enough to carry the worse ordering into the next visibly distinct frame.
+ */
+const ORDER_SWITCH_MARGIN = 1;
+
+/**
+ * Makes up a frame when there is nothing to frame: the box spanned by whatever the annotations
+ * themselves point at.
+ *
+ * This keeps everything on one arrangement algorithm. With a second one for the no-frame case,
+ * gaining or losing the model's outline midway through an orbit would swap algorithms and move
+ * every label at once. For arranging labels, "the model" is really just whatever the notes point
+ * at, which is what the model's outline approximates anyway.
+ *
+ * Given a minimum size, because the arrangement divides by the frame's height and reads which side
+ * of its centre things fall on. A single annotation, or several stacked on one pixel, would
+ * otherwise produce a frame with no area and put every label on the same edge.
+ */
+const MINIMUM_SYNTHETIC_FRAME = 2 * SECTOR_HYSTERESIS;
+
+export function anchorCloudFrame(inputs: readonly PlacementInput[]): Bounds2 {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const input of inputs) {
+    for (const anchor of input.projectedAnchors) {
+      if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) continue;
+      minX = Math.min(minX, anchor.x);
+      minY = Math.min(minY, anchor.y);
+      maxX = Math.max(maxX, anchor.x);
+      maxY = Math.max(maxY, anchor.y);
+    }
+  }
+  // Nothing is on screen, so any box will do — there is nothing to arrange around it.
+  if (!Number.isFinite(minX)) return { min: { x: 0, y: 0 }, max: { x: MINIMUM_SYNTHETIC_FRAME, y: MINIMUM_SYNTHETIC_FRAME } };
+  const padX = Math.max(0, MINIMUM_SYNTHETIC_FRAME - (maxX - minX)) / 2;
+  const padY = Math.max(0, MINIMUM_SYNTHETIC_FRAME - (maxY - minY)) / 2;
+  return { min: { x: minX - padX, y: minY - padY }, max: { x: maxX + padX, y: maxY + padY } };
+}
 
 /**
  * Decides which quarter of the screen a target belongs to, and therefore which edge its label goes
@@ -96,6 +153,38 @@ function stickySector(dx: number, dy: number, last: LabelSector | undefined): La
 export class LabelPlacer {
   /** What automatic mode chose last frame, so it does not flip back and forth. */
   private lastUseRows = false;
+  /**
+   * Which quarter each label was in last frame, so labels do not swim between edges.
+   *
+   * Deliberately kept rather than cleared each frame. An annotation that goes off screen never
+   * reaches the arrangement, so wiping this would throw away the memory of which side it was on.
+   * Coming back into view it would have nothing to be reluctant about and would pick a side
+   * afresh — landing on the far side of the drawing while its target had barely crossed the
+   * middle. That is exactly the swimming this prevents.
+   */
+  private previousSectors = new Map<string, LabelSector>();
+  /** Accepted capacity order per quadrant; absent annotations retain their place until forgotten. */
+  private previousCapacityOrders = new Map<string, readonly string[]>();
+
+  private capacityOrder(
+    key: string,
+    items: readonly InternalAnchor[],
+    value: (item: InternalAnchor) => number,
+    descending: boolean,
+  ): InternalAnchor[] {
+    const previousIds = this.previousCapacityOrders.get(key);
+    const ordered = stabilizeTemporalOrder(
+      items.map((item) => ({ ...item, value: value(item) })),
+      { ...(previousIds === undefined ? {} : { previousIds }), switchMargin: ORDER_SWITCH_MARGIN, descending },
+    );
+    const visible = new Set(items.map(({ id }) => id));
+    // A missing item is temporarily outside the projected arrangement. Keep the last complete
+    // order so its survivor and its own capacity membership return exactly when it reappears.
+    if (previousIds === undefined || previousIds.every((id) => visible.has(id))) {
+      this.previousCapacityOrders.set(key, ordered.map(({ id }) => id));
+    }
+    return ordered;
+  }
 
   computePlacements(
     anchors: Array<{ id: string; screenPos: Vec2 }>,
@@ -103,10 +192,11 @@ export class LabelPlacer {
     viewportSize: Vec2,
     labelDims?: Map<string, { width: number; height: number }>,
     insets: ViewportInsets = NO_INSETS,
-    /** Which quarter each label was in last frame, so labels do not swim between edges. */
-    prevSectors?: Map<string, LabelSector>,
     mode: PlacementMode = 'sides',
   ): PlacementResult[] {
+    // An empty projected frame can mean every live annotation is temporarily off screen. Document
+    // lifecycle calls `forget` with the authoritative live IDs, so only that seam may release the
+    // temporal allocation memory.
     if (anchors.length === 0) return [];
 
     const cx = (boundary.min.x + boundary.max.x) / 2;
@@ -131,7 +221,7 @@ export class LabelPlacer {
       const dx = a.screenPos.x - cx;
       const dy = a.screenPos.y - cy;
       // Reluctant switching, so labels near the middle do not flip edges as the camera turns.
-      const sector = stickySector(dx, dy, prevSectors?.get(a.id));
+      const sector = stickySector(dx, dy, this.previousSectors.get(a.id));
       buckets.get(sector)!.push({ id: a.id, screenPos: a.screenPos });
     }
 
@@ -154,7 +244,12 @@ export class LabelPlacer {
         for (const sector of sectors) {
           const items = buckets.get(sector)!;
           if (items.length === 0) continue;
-          const placed = placeBandQuadrant(sector, items, boundary, dim);
+          const placed = placeBandQuadrant(
+            sector,
+            this.capacityOrder(`row:${sector}`, items, (item) => item.screenPos.y, sector.startsWith('bottom')),
+            boundary,
+            dim,
+          );
           primary.push(...placed.primary);
           if (placed.overflow.length > 0) overflowGroups.push(placed.overflow);
         }
@@ -178,7 +273,7 @@ export class LabelPlacer {
           results.push(p);
         }
       }
-      return results;
+      return this.settle(results, anchors, labelDims);
     }
 
     for (const side of ['left', 'right'] as const) {
@@ -197,7 +292,13 @@ export class LabelPlacer {
       for (const sector of sectors) {
         const items = buckets.get(sector)!;
         if (items.length === 0) continue;
-        const placed = placeQuadrant(sector, items, boundary, sideMaxW, dim);
+        const placed = placeQuadrant(
+          sector,
+          this.capacityOrder(`column:${sector}`, items, (item) => item.screenPos.x, sector.endsWith('right')),
+          boundary,
+          sideMaxW,
+          dim,
+        );
         primary.push(...placed.primary);
         if (placed.overflow.length > 0) overflowGroups.push(placed.overflow);
       }
@@ -217,7 +318,35 @@ export class LabelPlacer {
         results.push(p);
       }
     }
+    return this.settle(results, anchors, labelDims);
+  }
+
+  /**
+   * Un-crosses the columns and records the side each label ended on — in that order, because the
+   * swap is what decides the final side and the memory must remember what was drawn.
+   */
+  private settle(
+    results: PlacementResult[],
+    anchors: Array<{ id: string; screenPos: Vec2 }>,
+    labelDims?: Map<string, { width: number; height: number }>,
+  ): PlacementResult[] {
+    uncrossLeaderSlots(results, new Map(anchors.map((anchor) => [anchor.id, anchor.screenPos])), labelDims);
+    for (const result of results) this.previousSectors.set(result.annotationId, result.sector);
     return results;
+  }
+
+  /**
+   * Drops the remembered side of annotations that no longer exist. The memory deliberately
+   * survives frames where an annotation was off screen, so it cannot be rebuilt each frame and
+   * without this it would grow for the whole session.
+   */
+  public forget(live: ReadonlySet<string>): void {
+    for (const id of this.previousSectors.keys()) if (!live.has(id)) this.previousSectors.delete(id);
+    for (const [key, ids] of this.previousCapacityOrders) {
+      const retained = ids.filter((id) => live.has(id));
+      if (retained.length === 0) this.previousCapacityOrders.delete(key);
+      else this.previousCapacityOrders.set(key, retained);
+    }
   }
 }
 
@@ -245,9 +374,7 @@ function placeQuadrant(
 
   // Step 1: decide who fits. Targets closest to the edge get the direct positions, because a short
   // straight leader is better than a long one and they have the least distance to cover.
-  const xSorted = [...items].sort((a, b) =>
-    isLeft ? (a.screenPos.x - b.screenPos.x) : (b.screenPos.x - a.screenPos.x),
-  );
+  const xSorted = items;
 
   const halfHeight = (boundary.max.y - boundary.min.y) / 2;
   const primary: InternalAnchor[] = [];
@@ -424,9 +551,7 @@ function placeBandQuadrant(
 
   // Step 1: decide who fits. Targets closest to the edge get the direct positions, as in a
   // column — only measured vertically rather than horizontally.
-  const ySorted = [...items].sort((a, b) =>
-    isTop ? (a.screenPos.y - b.screenPos.y) : (b.screenPos.y - a.screenPos.y),
-  );
+  const ySorted = items;
 
   const halfWidth = (boundary.max.x - boundary.min.x) / 2;
   const primary: InternalAnchor[] = [];
@@ -626,7 +751,7 @@ function clampY(
  *
  * Modifies `placements` directly.
  */
-export function uncrossLeaderSlots(
+function uncrossLeaderSlots(
   placements: PlacementResult[],
   anchors: ReadonlyMap<string, Vec2>,
   labelDims?: ReadonlyMap<string, { width: number; height: number }>,

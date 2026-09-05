@@ -551,6 +551,26 @@ describe('ink grips', () => {
     leader.dispose();
   });
 
+  it('clears the drawn ink preview after release, so undo restores the original stroke', () => {
+    const { leader } = makeLeader();
+    createInk(leader, 'ink-1', [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }]);
+    leader.update();
+    const drawn = leader.geometry.ofInk('ink-1')!.points.map((point) => ({ ...point }));
+
+    leader.editing.beginInkPointDrag('ink-1', 1, at(450, 250));
+    leader.editing.pointerMove(at(450, 200));
+    leader.editing.pointerUp(at(450, 200));
+    leader.update();
+    const moved = leader.geometry.ofInk('ink-1')!.points[1]!;
+    expect(moved.x).toBeCloseTo(450);
+    expect(moved.y).toBeCloseTo(200);
+
+    leader.history.undo();
+    leader.update();
+    expect(leader.geometry.ofInk('ink-1')!.points).toEqual(drawn);
+    leader.dispose();
+  });
+
   it('dragging the stroke body moves every point together, in one undo step', () => {
     const { leader } = makeLeader();
     createInk(leader, 'ink-1', [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }]);

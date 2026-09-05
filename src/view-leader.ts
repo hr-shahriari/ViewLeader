@@ -343,49 +343,24 @@ export class ViewLeader {
       throw error;
     }
     invalidateRuntime = () => this.#runtime.invalidate();
-    let views: ReturnType<typeof createViewsCapability> | undefined;
-    let authoring: AuthoringController | undefined;
-    let editing: EditingController | undefined;
-    let pluginAuthoring: PluginAuthoringController | undefined;
-    let markup: MarkupAuthoringCapability | undefined;
+    // The one-tool-at-a-time rule, in one place. Every controller's start() calls this before
+    // taking over. Cancelling an idle controller is a no-op, so each safely cancels itself too.
+    const preempt = (): void => {
+      this.#authoring?.cancel('preempted');
+      this.#markup?.cancel('preempted');
+      this.#pluginAuthoring?.cancel('preempted');
+    };
     try {
-      views = createViewsCapability({
+      this.#views = createViewsCapability({
         document: this.#document,
         runtime: this.#runtime,
         ...(options.adapters.viewerState === undefined
           ? {}
           : { viewerState: options.adapters.viewerState }),
       });
-      this.#views = views;
-      authoring = new AuthoringController(options.boundary, this.#document, this.#runtime);
-      this.#authoring = authoring;
-      editing = new EditingController({
-        boundary: options.boundary,
+      this.#authoring = new AuthoringController(options.boundary, this.#document, this.#runtime, preempt);
+      this.#markup = new MarkupAuthoringCapability({
         document: this.#document,
-        runtime: this.#runtime,
-        // Fetched on demand: markup is built a few lines further down, and a drag cannot possibly
-        // need it until long after that.
-        markup: () => this.#markup,
-        ...(options.editing === undefined ? {} : { editing: options.editing }),
-        toolActive: () => this.#toolActive(),
-      });
-      this.#editing = editing;
-      pluginAuthoring = new PluginAuthoringController({
-        document: this.#document,
-        extensions: this.#extensions,
-        runtime: this.#runtime,
-        ...(options.adapters.interaction === undefined
-          ? {}
-          : { interaction: options.adapters.interaction }),
-        preemptBuiltIn: () => {
-          authoring?.cancel('preempted');
-          markup?.cancel('preempted');
-        },
-      });
-      this.#pluginAuthoring = pluginAuthoring;
-      markup = new MarkupAuthoringCapability({
-        document: this.#document,
-        assertActive: this.#assertActive,
         prepareContent: (content) => this.#preparePluginContent(content),
         validateStyleId: (styleId) => this.#requireStyleId(styleId),
         boundary: options.boundary,
@@ -400,12 +375,25 @@ export class ViewLeader {
           documentRevision: this.#document.documentRevision,
         }),
         publishTransientChange: (render) => this.#runtime.publishTransientChange(render),
-        preemptOthers: () => {
-          authoring?.cancel('preempted');
-          pluginAuthoring?.cancel('preempted');
-        },
+        preemptOthers: preempt,
       });
-      this.#markup = markup;
+      this.#editing = new EditingController({
+        boundary: options.boundary,
+        document: this.#document,
+        runtime: this.#runtime,
+        markup: this.#markup,
+        ...(options.editing === undefined ? {} : { editing: options.editing }),
+        toolActive: () => this.#toolActive(),
+      });
+      this.#pluginAuthoring = new PluginAuthoringController({
+        document: this.#document,
+        extensions: this.#extensions,
+        runtime: this.#runtime,
+        ...(options.adapters.interaction === undefined
+          ? {}
+          : { interaction: options.adapters.interaction }),
+        preemptBuiltIn: preempt,
+      });
       // Everything holding in-progress state has to react to a change before subscribers are told
       // about it, or a host would read a snapshot while half the engine still described the old
       // document.
@@ -457,20 +445,27 @@ export class ViewLeader {
       this.#publishDiagnostics(initialDiagnostics);
     } catch (error) {
       this.#disposed = true;
-      const cleanupErrors = runCleanupSteps([
-        () => pluginAuthoring?.dispose(),
-        () => editing?.dispose(),
-        () => authoring?.dispose(),
-        () => markup?.dispose(),
-        () => views?.dispose(),
-        () => this.#runtime.dispose(),
-        () => this.#extensions.dispose(),
-      ]);
+      const cleanupErrors = runCleanupSteps(this.#cleanupSteps());
       if (cleanupErrors.length > 0) {
         throw new AggregateError([error, ...cleanupErrors], 'ViewLeader construction failed during cleanup');
       }
       throw error;
     }
+  }
+
+  /** Every owned resource, in the order dispose() releases them. The first five are read through
+   *  `?.` because the constructor's failure path calls this before they are all built; the runtime
+   *  and extensions always exist by then. */
+  #cleanupSteps(): Array<() => void> {
+    return [
+      () => this.#views?.dispose(),
+      () => this.#pluginAuthoring?.dispose(),
+      () => this.#editing?.dispose(),
+      () => this.#authoring?.dispose(),
+      () => this.#markup?.dispose(),
+      () => this.#extensions.dispose(),
+      () => this.#runtime.dispose(),
+    ];
   }
 
   public update(): void {
@@ -497,6 +492,9 @@ export class ViewLeader {
   /**
    * How labels are arranged around the model: `'sides'` in columns left and right, `'rows'` across
    * the top and bottom, or `'auto'` — the default — which chooses by the model's shape.
+   * `'quadrants'` jointly organizes automatic labels and routes: short side exits near the edge,
+   * ordered top/bottom escape lanes for deeper or competing anchors. Manual routes, regions and
+   * locked labels keep their existing behavior and act as obstacles for organized annotations.
    *
    * Automatic is deliberately reluctant to change its mind, so orbiting past the threshold cannot
    * flip the entire drawing back and forth.
@@ -509,6 +507,23 @@ export class ViewLeader {
   public setPlacementMode(mode: PlacementMode): void {
     this.#assertActive();
     this.#runtime.setPlacementMode(mode);
+  }
+
+  /**
+   * Keeps every label outside the current model rectangle, even if it leaves the viewport.
+   * Manual and locked positions are adjusted only for display; their authored positions remain
+   * intact. Requires model bounds and the host's safe bounds-projection capability (included in
+   * the Three adapter). While these are unavailable, labels are withheld and a diagnostic explains
+   * why. This viewer setting is not saved in the annotation document.
+   */
+  public setKeepLabelsOutsideModel(enabled: boolean): void {
+    this.#assertActive();
+    this.#runtime.setKeepLabelsOutsideModel(enabled);
+  }
+
+  public get keepLabelsOutsideModel(): boolean {
+    this.#assertActive();
+    return this.#runtime.keepLabelsOutsideModel;
   }
 
   /**
@@ -616,15 +631,7 @@ export class ViewLeader {
     // Before the steps below: a subscribe racing disposal should find nothing rather than a
     // plausible-looking subscription to an emitter that will never fire again.
     clearFrameSeam(this);
-    const cleanupErrors = runCleanupSteps([
-      () => this.#views.dispose(),
-      () => this.#pluginAuthoring.dispose(),
-      () => this.#editing.dispose(),
-      () => this.#authoring.dispose(),
-      () => this.#markup.dispose(),
-      () => this.#extensions.dispose(),
-      () => this.#runtime.dispose(),
-    ]);
+    const cleanupErrors = runCleanupSteps(this.#cleanupSteps());
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'ViewLeader disposal failed');
     }
@@ -735,13 +742,11 @@ export class ViewLeader {
 
   #createAuthoringCapability(): AuthoringCapability {
     return guarded({
-      markup: this.#markup,
-      plugins: this.#pluginAuthoring,
+      markup: guarded(this.#markup, this.#assertActive),
+      plugins: guarded(this.#pluginAuthoring, this.#assertActive),
       getSnapshot: () => this.#authoring.getSnapshot(),
       subscribe: (listener: () => void) => this.#authoring.subscribe(listener),
       start: (options: StartAuthoringOptions) => {
-        this.#pluginAuthoring.cancel('preempted');
-        this.#markup.cancel('preempted');
         return this.#authoring.start({
           ...options,
           draft: {

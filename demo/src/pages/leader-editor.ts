@@ -33,6 +33,7 @@ import { createThreeAdapter } from 'viewleader/three';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
+import { mountOrganizationControls } from '../shared/organizationControls';
 import {
   createExampleHarness,
   exposeExampleManager,
@@ -104,6 +105,7 @@ try {
   });
 
   const controls = createControlBar();
+  mountOrganizationControls(controls, leader, (message) => controls.status(message));
 
   // Seeded, not empty: a page that starts blank has nothing to edit and nothing to look at.
   const seed: readonly AnnotationDraft[] = [

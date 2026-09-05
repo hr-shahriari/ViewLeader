@@ -551,7 +551,6 @@ describe('v1 transactional markup capability', () => {
   function capability(document: DocumentEngine): MarkupAuthoringCapability {
     return new MarkupAuthoringCapability({
       document,
-      assertActive: () => undefined,
       prepareContent: (content) => content,
       validateStyleId: () => undefined,
     });
@@ -608,7 +607,14 @@ describe('v1 transactional markup capability', () => {
     expect(markup.getInk(ink.id)?.points[0]).toEqual({ x: 0, y: 0 });
   });
 
-  it('adds, reorders, reroutes, retargets and removes anchor legs, refusing the last one', () => {
+  it('keeps direct capability disposal idempotent', () => {
+    const markup = capability(new DocumentEngine());
+    expect(() => markup.dispose()).not.toThrow();
+    expect(() => markup.dispose()).not.toThrow();
+    expect(() => markup.getSnapshot()).toThrowError(expect.objectContaining({ code: 'DISPOSED' }));
+  });
+
+  it('adds and removes anchor legs, refusing the last one', () => {
     const document = new DocumentEngine();
     const markup = capability(document);
     document.create({
@@ -627,28 +633,14 @@ describe('v1 transactional markup capability', () => {
       },
       routing: { kind: 'automatic', mode: 'orthogonal' },
     });
-    markup.addAnchor('multi', {
+    const annotation = markup.addAnchor('multi', {
       id: 'region',
       anchor: regionAnchorToCore(createRegionAnchor(plane, {
         kind: 'rectangle', center: { x: 0, y: 0 }, width: 2, height: 2,
       })),
       routing: { kind: 'manual', vertices: [{ x: 4, y: 5 }] },
     });
-    markup.reorderAnchor('multi', 'region', 0);
-    markup.setLegRoute('multi', 'element', { mode: 'manual', vertices: [{ x: 9, y: 9 }] });
-    const annotation = markup.retargetAnchor('multi', 'point', {
-      kind: 'world-point', point: { x: 10, y: 10, z: 10 },
-    });
-    expect(annotation.anchors.map(({ id }) => id)).toEqual(['region', 'point', 'element']);
-    expect(annotation.anchors.map(({ routing }) => routing)).toEqual([
-      { kind: 'manual', vertices: [{ x: 4, y: 5 }] },
-      { kind: 'automatic', mode: 'straight' },
-      { kind: 'manual', vertices: [{ x: 9, y: 9 }] },
-    ]);
-    expect(annotation.anchors[1]?.anchor).toEqual({ kind: 'world-point', point: { x: 10, y: 10, z: 10 } });
-    expect(() => markup.reorderAnchor('multi', 'region', 3)).toThrowError(
-      expect.objectContaining({ code: 'INVALID_INPUT' }),
-    );
+    expect(annotation.anchors.map(({ id }) => id)).toEqual(['point', 'element', 'region']);
     markup.removeAnchor('multi', 'region');
     markup.removeAnchor('multi', 'element');
     expect(() => markup.removeAnchor('multi', 'point')).toThrowError(expect.objectContaining({

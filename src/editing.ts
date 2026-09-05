@@ -138,13 +138,11 @@ interface EditingControllerOptions {
   readonly document: DocumentEngine;
   readonly runtime: ViewLeaderRuntime;
   /**
-   * Fetched on demand, because the markup capability is built after this one.
-   *
    * Region and ink edits are committed through it rather than written here directly — it already
    * owns the "one gesture, one commit" logic, and a drag has no business writing to the document
    * itself.
    */
-  readonly markup: () => MarkupAuthoringCapability;
+  readonly markup: MarkupAuthoringCapability;
   readonly editing?: EditingOptions;
   /**
    * True while a drawing tool is active.
@@ -217,7 +215,7 @@ export class EditingController {
   readonly #boundary: Element;
   readonly #document: DocumentEngine;
   readonly #runtime: ViewLeaderRuntime;
-  readonly #markup: () => MarkupAuthoringCapability;
+  readonly #markup: MarkupAuthoringCapability;
   readonly #listeners = new Set<() => void>();
   readonly #snapshotCache = revisionCache<EditingSnapshot>();
   /** Every DOM listener is bound to this signal, so disposing is one `abort()`. */
@@ -342,7 +340,7 @@ export class EditingController {
     }
     if (hit.kind === 'ink') {
       this.#begin(pointer, (at) => {
-        const ink = this.#markup().getInk(hit.id);
+        const ink = this.#markup.getInk(hit.id);
         return ink === undefined ? undefined : { id: hit.id, kind: 'ink', start: at, baseInk: ink };
       });
       return;
@@ -377,7 +375,7 @@ export class EditingController {
   public beginInkPointDrag(id: string, index: number, pointer: NormalizedPointerInput): void {
     this.#begin(pointer, (at) => {
       if (this.#runtime.geometryOfInk(id)?.points[index] === undefined) return undefined;
-      const ink = this.#markup().getInk(id);
+      const ink = this.#markup.getInk(id);
       return ink === undefined
         ? undefined
         : { id, kind: 'ink-point', start: at, baseInk: ink, vertexIndex: index };
@@ -549,12 +547,12 @@ export class EditingController {
     const screenDelta = { x: at.x - active.origin.x, y: at.y - active.origin.y };
     switch (active.kind) {
       case 'handle':
-        this.#runtime.setAnchorPreview({ id: active.id, legId: active.legId!, at: position });
+        this.#runtime.setDragPreview({ kind: 'anchor', id: active.id, legId: active.legId!, at: position });
         break;
       case 'vertex':
       case 'midpoint':
-        this.#runtime.setRoutePreview({
-          id: active.id,
+        this.#runtime.setDragPreview({
+          kind: 'route', id: active.id,
           legId: active.legId!,
           route: this.#routeFor(active, position),
         });
@@ -568,14 +566,14 @@ export class EditingController {
         // a passing error escape into a pointer handler. Releasing there still reports honestly.
         const anchor = this.#regionFor(active, screenDelta);
         if (anchor !== undefined) {
-          this.#runtime.setRegionPreview({ id: active.id, legId: active.legId!, anchor });
+          this.#runtime.setDragPreview({ kind: 'region', id: active.id, legId: active.legId!, anchor });
         }
         break;
       }
       case 'ink':
       case 'ink-point': {
         const ink = this.#inkFor(active, screenDelta);
-        if (ink !== undefined) this.#runtime.setInkPreview({ id: active.id, ink });
+        if (ink !== undefined) this.#runtime.setDragPreview({ kind: 'ink', id: active.id, ink });
         break;
       }
       default: {
@@ -583,7 +581,7 @@ export class EditingController {
         // snapped value is stored here rather than only handed to the renderer.
         const snapped = this.#snapLabelPosition(active.id, position);
         active.preview = snapped;
-        this.#runtime.setPlacementPreview({ id: active.id, position: snapped });
+        this.#runtime.setDragPreview({ kind: 'placement', id: active.id, position: snapped });
       }
     }
     this.#publish(false);
@@ -698,7 +696,7 @@ export class EditingController {
       this.#commit(active, () => {
         const anchor = this.#regionFor(active, screenDelta);
         if (anchor === undefined) throw domainError('INVALID_INPUT', 'The region drag has no valid result');
-        this.#markup().updateRegion(active.id, active.legId!, () => anchor, 'Edit region');
+        this.#markup.updateRegion(active.id, active.legId!, () => anchor, 'Edit region');
       });
       return;
     }
@@ -706,7 +704,7 @@ export class EditingController {
       this.#commit(active, () => {
         const ink = this.#inkFor(active, screenDelta);
         if (ink === undefined) throw domainError('INVALID_INPUT', 'The ink drag has no valid result');
-        this.#markup().updateInk(active.id, () => ink, 'Edit ink');
+        this.#markup.updateInk(active.id, () => ink, 'Edit ink');
       });
       return;
     }
@@ -807,7 +805,7 @@ export class EditingController {
     }
     this.#commit(active, () => {
       const plane = drawingPlaneFromSurfacePick(surface!);
-      this.#markup().updateRegion(
+      this.#markup.updateRegion(
         active.id,
         active.legId!,
         (current) => retargetRegion(current, plane),
@@ -1026,11 +1024,7 @@ export class EditingController {
     if (active === undefined) return;
     this.#active = undefined;
     active.pick?.abort();
-    this.#runtime.setPlacementPreview(null);
-    this.#runtime.setAnchorPreview(null);
-    this.#runtime.setRoutePreview(null);
-    this.#runtime.setRegionPreview(null);
-    this.#runtime.setInkPreview(null);
+    this.#runtime.setDragPreview(null);
     try { active.lease?.release(); } catch { /* lease ownership has still ended */ }
     this.#publish(!disposing);
   }

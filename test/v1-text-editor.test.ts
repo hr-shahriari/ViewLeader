@@ -399,7 +399,11 @@ describe('the element', () => {
 });
 
 describe('the double-click guard', () => {
-  function guardHarness(phase: () => string, hitKind: string): {
+  function guardHarness(
+    phase: () => string,
+    hitKind: string,
+    nested?: Readonly<{ markup: string; plugins: string }>,
+  ): {
     readonly editor: TextEditorController;
     readonly asked: { x: number; y: number }[];
     readonly boundary: HTMLDivElement;
@@ -412,7 +416,13 @@ describe('the double-click guard', () => {
     // The narrow host port is what makes this testable: real annotations, a stubbed camera.
     const host: TextEditorHost = {
       annotations: leader.annotations,
-      authoring: { getSnapshot: () => ({ phase: phase() }) },
+      authoring: {
+        getSnapshot: () => ({ phase: phase() }),
+        ...(nested === undefined ? {} : {
+          markup: { getSnapshot: () => ({ phase: nested.markup }) },
+          plugins: { getSnapshot: () => ({ phase: nested.plugins }) },
+        }),
+      },
       editing: {
         hitTestScreen: (at) => { asked.push(at); return { kind: hitKind, id: 'n' }; },
       },
@@ -428,10 +438,30 @@ describe('the double-click guard', () => {
     expect(editor.getSnapshot().annotationId).toBe('n');
   });
 
+  it('opens when all three authoring tools are idle', () => {
+    const { editor, boundary } = guardHarness(
+      () => 'idle',
+      'label',
+      { markup: 'idle', plugins: 'idle' },
+    );
+    editor.boundaryProps.onDoubleClick({ clientX: 1, clientY: 1, currentTarget: boundary });
+    expect(editor.getSnapshot().annotationId).toBe('n');
+  });
+
   it('leaves the gesture to a live authoring session', () => {
     const { editor, asked, boundary } = guardHarness(() => 'picking', 'label');
     // Core binds `dblclick` on the same boundary to finish a multi-point route, and its listener
     // is added second — so without this the finishing gesture opens an editor on top of it.
+    editor.boundaryProps.onDoubleClick({ clientX: 40, clientY: 25, currentTarget: boundary });
+    expect(asked).toEqual([]);
+    expect(editor.getSnapshot().annotationId).toBeNull();
+  });
+
+  it.each([
+    ['markup', { markup: 'drawing', plugins: 'idle' }],
+    ['plugin', { markup: 'idle', plugins: 'active' }],
+  ] as const)('leaves the gesture to a live %s authoring session', (_name, nested) => {
+    const { editor, asked, boundary } = guardHarness(() => 'idle', 'label', nested);
     editor.boundaryProps.onDoubleClick({ clientX: 40, clientY: 25, currentTarget: boundary });
     expect(asked).toEqual([]);
     expect(editor.getSnapshot().annotationId).toBeNull();

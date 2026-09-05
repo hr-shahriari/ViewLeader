@@ -17,7 +17,6 @@ import {
   legRouteToCore,
   regionAnchorFromCore,
   regionAnchorToCore,
-  validateIndex,
   validateInsertIndex,
   worldPointToDrawingPlane,
   type ClosedRegionGeometry,
@@ -112,7 +111,6 @@ export interface MarkupAuthoringIntegration {
 
 export interface MarkupAuthoringOptions extends MarkupAuthoringIntegration {
   readonly document: DocumentEngine;
-  readonly assertActive: () => void;
   readonly prepareContent: (content: AnnotationContent) => AnnotationContent;
   readonly validateStyleId: (styleId: string | undefined) => void;
 }
@@ -144,7 +142,6 @@ interface ActiveMarkupAuthoring {
  */
 export class MarkupAuthoringCapability {
   readonly #document: DocumentEngine;
-  readonly #assertActive: () => void;
   readonly #prepareContent: (content: AnnotationContent) => AnnotationContent;
   readonly #validateStyleId: (styleId: string | undefined) => void;
   readonly #integration: MarkupAuthoringIntegration;
@@ -156,7 +153,6 @@ export class MarkupAuthoringCapability {
 
   public constructor(options: MarkupAuthoringOptions) {
     this.#document = options.document;
-    this.#assertActive = options.assertActive;
     this.#prepareContent = options.prepareContent;
     this.#validateStyleId = options.validateStyleId;
     this.#integration = options;
@@ -480,26 +476,6 @@ export class MarkupAuthoringCapability {
     return this.#document.update(annotationId, { anchors }, 'Add annotation anchor');
   }
 
-  public retargetAnchor(annotationId: string, legId: string, anchor: Anchor): Annotation {
-    this.#assertUsable();
-    const annotation = this.#requireAnnotation(annotationId);
-    requireLeg(annotation, legId);
-    const anchors = annotation.anchors.map((leg) => leg.id === legId
-      ? { ...leg, anchor: structuredClone(anchor) }
-      : leg);
-    return this.#document.update(annotationId, { anchors }, 'Retarget annotation anchor');
-  }
-
-  public setLegRoute(annotationId: string, legId: string, route: LegRoute): Annotation {
-    this.#assertUsable();
-    const annotation = this.#requireAnnotation(annotationId);
-    requireLeg(annotation, legId);
-    const anchors = annotation.anchors.map((leg) => leg.id === legId
-      ? { ...leg, routing: legRouteToCore(route) }
-      : leg);
-    return this.#document.update(annotationId, { anchors }, 'Edit annotation route');
-  }
-
   public removeAnchor(annotationId: string, legId: string): Annotation {
     this.#assertUsable();
     const annotation = this.#requireAnnotation(annotationId);
@@ -514,16 +490,6 @@ export class MarkupAuthoringCapability {
     return this.#document.update(annotationId, {
       anchors: annotation.anchors.filter(({ id }) => id !== legId),
     }, 'Remove annotation anchor');
-  }
-
-  public reorderAnchor(annotationId: string, legId: string, toIndex: number): Annotation {
-    this.#assertUsable();
-    const annotation = this.#requireAnnotation(annotationId);
-    const leg = requireLeg(annotation, legId);
-    validateIndex(toIndex, annotation.anchors.length);
-    const anchors = annotation.anchors.filter(({ id }) => id !== legId);
-    anchors.splice(toIndex, 0, leg);
-    return this.#document.update(annotationId, { anchors }, 'Reorder annotation anchor');
   }
 
   #requireAnnotation(id: string): Annotation {
@@ -692,7 +658,6 @@ export class MarkupAuthoringCapability {
   }
 
   #assertUsable(): void {
-    this.#assertActive();
     if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
   }
 }
