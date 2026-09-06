@@ -179,6 +179,9 @@ a { color: inherit; }
 /* Selects inside a panel are rows like every other field, not the inline pills the bar uses. */
 .side-panel .control-select { display: grid; grid-template-columns: 1fr 96px; gap: 8px; width: 100%; margin-bottom: 7px; white-space: normal; }
 .side-panel .control-select span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-panel .organization-placement { grid-template-columns: minmax(0, 1fr) 132px; }
+.side-panel .organization-outside { display: flex; align-items: center; }
+.side-panel .organization-outside span { white-space: normal; }
 .side-panel .control-select select {
   width: 100%;
   min-width: 0;

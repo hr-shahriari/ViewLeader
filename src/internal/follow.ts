@@ -54,7 +54,7 @@ export interface FollowGeometrySource {
   ofInk(id: string): InkScreenGeometry | undefined;
 }
 
-export interface FollowRegistryOptions {
+interface FollowRegistryOptions {
   readonly geometry: FollowGeometrySource;
   /** Runs the callback after each frame the runtime actually drew. */
   readonly subscribe: (listener: () => void) => () => void;

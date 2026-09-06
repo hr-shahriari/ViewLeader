@@ -85,29 +85,6 @@ try {
     });
     bar.status(`Routing: ${mode} — the dogleg lands on a text line, the elbow turns once.`);
   });
-
-  // Beside the routing select on purpose: occlusion runs AFTER routing, not instead of it. The mode
-  // above decides the path; this decides what happens to a path that turns out to be behind the
-  // building. Each of these seven notes has one leg, so "every leg is buried" is just "its leg is
-  // buried" — which is the only reason `fade` has anything to show here; with a leg still in view it
-  // would render exactly like `keep`.
-  const OCCLUSION_SAYS: Record<string, string> = {
-    keep: 'keep — routing picks the path, occlusion then grades it: a leg behind the building is'
-      + ' drawn dashed and dimmed (ISO 128) on the very route the mode above gave it. The default.',
-    fade: 'fade — the same dashing, plus a note whose every leg is buried drops to a quarter'
-      + ' opacity. These notes have one leg each, so a buried leg fades its whole note.',
-    hide: 'hide — a buried leg is dropped from the drawing: stroke, arrowhead, grips and click'
-      + ' target with it. One leg each here, so a buried note goes altogether — and comes back on'
-      + ' whatever path the routing mode gives it once the camera lets it be seen again.',
-  };
-  bar.select('Occlusion', Object.keys(OCCLUSION_SAYS), (policy) => {
-    leader.history.transaction(`Occlusion ${policy}`, () => {
-      for (const { id } of leader.annotations.getSnapshot().annotations) {
-        leader.annotations.update(id, { occlusion: policy as 'keep' | 'fade' | 'hide' });
-      }
-    });
-    bar.status(OCCLUSION_SAYS[policy]!);
-  });
   bar.status('Seven content kinds anchored to the model. Change the leader routing above.');
 
   // The control dock is painted over the viewport, and a label laid out underneath it is

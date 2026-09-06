@@ -7,12 +7,7 @@
 // Every number here is a drafting unit rather than a pixel: pen tiers, paper millimetres, standard
 // lettering heights. That way each one can be checked against a published standard instead of being
 // a value somebody once thought looked right.
-import {
-  domainError,
-  InvalidInputError,
-  InvariantViolationError,
-  NotFoundError,
-} from './errors.js';
+import { domainError } from './errors.js';
 import { CAD_PAPER, PEN, mm, type Theme } from './theme.js';
 import type {
   Annotation,
@@ -28,6 +23,10 @@ import type {
   Vec2,
 } from './types.js';
 import { revisionCache } from './internal/snapshot-cache.js';
+import { deepFreeze } from './internal/freeze.js';
+import { assertJson, exactKeysCheck, type JsonBounds } from './internal/json.js';
+
+const assertExactKeys = exactKeysCheck((message, details) => domainError('INVALID_DEFINITION', message, details));
 
 export type DefinitionKind = 'style' | 'template' | 'terminator' | 'enclosure';
 
@@ -238,8 +237,8 @@ export interface DefinitionMutation<Value> {
 export interface DefinitionDocumentPort {
   readDefinitions(): readonly TypedDefinition[];
   referenceCounts(id: string): DefinitionReferenceCounts;
-  snapshotStamp?(): SnapshotStamp;
-  subscribe?(listener: () => void): Unsubscribe;
+  snapshotStamp(): SnapshotStamp;
+  subscribe(listener: () => void): Unsubscribe;
   transact<Value>(
     label: string,
     operation: (current: readonly TypedDefinition[]) => DefinitionMutation<Value>,
@@ -249,6 +248,14 @@ export interface DefinitionDocumentPort {
 export interface DefinitionsSnapshot extends SnapshotStamp {
   readonly definitions: readonly TypedDefinition[];
 }
+
+/** Template defaults are a handful of fields. The caps stop a runaway object, not a real template. */
+const TEMPLATE_JSON_BOUNDS: JsonBounds = Object.freeze({
+  maxDepth: 16,
+  maxNodes: 2_048,
+  maxArrayLength: 512,
+  maxKeyLength: 128,
+});
 
 /** Standard arrowhead proportions: three times as long as it is wide. */
 const ARROW_HALF_WIDTH = 1 / 6;
@@ -666,7 +673,7 @@ export function applyTemplateDefaults<Target extends TemplateApplicable>(
   // This template came out of the document, so it is read leniently: a field written by a newer
   // version is carried through rather than rejected.
   validateDefinition(template, []);
-  return clone({ ...target, ...template.defaults }) as Target;
+  return structuredClone({ ...target, ...template.defaults }) as Target;
 }
 
 export class DefinitionsCapability {
@@ -682,44 +689,41 @@ export class DefinitionsCapability {
   }
 
   public getSnapshot(): DefinitionsSnapshot {
-    const stamp = this.#port.snapshotStamp?.();
-    const build = (): DefinitionsSnapshot => Object.freeze({
-      ...(stamp ?? { runtimeRevision: 0, documentRevision: 0 }),
+    const stamp = this.#port.snapshotStamp();
+    return this.#snapshotCache(stamp.runtimeRevision, () => Object.freeze({
+      ...stamp,
       definitions: Object.freeze([...this.list()]),
-    });
-    // No stamp means no change signal either — `subscribe` falls back to a no-op — so there is
-    // nothing to key a cache on and a fresh read is the honest answer.
-    return stamp === undefined ? build() : this.#snapshotCache(stamp.runtimeRevision, build);
+    }));
   }
 
   public subscribe(listener: () => void): Unsubscribe {
-    return this.#port.subscribe?.(listener) ?? (() => undefined);
+    return this.#port.subscribe(listener);
   }
 
   public list(kind?: DefinitionKind): readonly TypedDefinition[] {
     const definitions = [...this.#builtIns, ...this.#port.readDefinitions()];
-    return clone(kind === undefined ? definitions : definitions.filter((entry) => entry.kind === kind));
+    return structuredClone(kind === undefined ? definitions : definitions.filter((entry) => entry.kind === kind));
   }
 
   public get(id: string): TypedDefinition | undefined {
     const value = this.#builtIns.find((candidate) => candidate.id === id)
       ?? this.#port.readDefinitions().find((candidate) => candidate.id === id);
-    return value === undefined ? undefined : clone(value);
+    return value === undefined ? undefined : structuredClone(value);
   }
 
   public create<Definition extends TypedDefinition>(definition: Definition): Definition {
     validateDefinition(definition);
     this.#assertCustomId(definition.id);
-    const owned = clone(definition);
+    const owned = structuredClone(definition);
     return this.#port.transact(`Create ${definition.kind} ${definition.id}`, (current) => {
       if (current.some(({ id }) => id === definition.id)) {
-        throw new InvalidInputError(`Definition "${definition.id}" already exists`, {
+        throw domainError('INVALID_INPUT', `Definition "${definition.id}" already exists`, {
           id: definition.id,
           kind: definition.kind,
         });
       }
       validateDefinitionReferences(owned, [...current, owned]);
-      return { definitions: [...current, owned], value: clone(owned) };
+      return { definitions: [...current, owned], value: structuredClone(owned) };
     }) as Definition;
   }
 
@@ -730,18 +734,18 @@ export class DefinitionsCapability {
     validateDefinition(replacement);
     this.#assertCustomId(id);
     if (replacement.id !== id) {
-      throw new InvalidInputError('A definition update cannot change its id', {
+      throw domainError('INVALID_INPUT', 'A definition update cannot change its id', {
         id,
         replacementId: replacement.id,
       });
     }
-    const owned = clone(replacement);
+    const owned = structuredClone(replacement);
     return this.#port.transact(`Update ${replacement.kind} ${id}`, (current) => {
       const index = current.findIndex((candidate) => candidate.id === id);
       const before = current[index];
-      if (before === undefined) throw new NotFoundError('definition', id);
+      if (before === undefined) throw domainError('NOT_FOUND', `Unknown definition: ${id}`, { id });
       if (before.kind !== replacement.kind) {
-        throw new InvalidInputError('A definition update cannot change its kind', {
+        throw domainError('INVALID_INPUT', 'A definition update cannot change its kind', {
           id,
           currentKind: before.kind,
           replacementKind: replacement.kind,
@@ -750,7 +754,7 @@ export class DefinitionsCapability {
       const next = [...current];
       next[index] = owned;
       validateDefinitionReferences(owned, next);
-      return { definitions: next, value: clone(owned) };
+      return { definitions: next, value: structuredClone(owned) };
     }) as Definition;
   }
 
@@ -765,10 +769,10 @@ export class DefinitionsCapability {
     }
     return this.#port.transact(`Remove definition ${id}`, (current) => {
       const removed = current.find((candidate) => candidate.id === id);
-      if (removed === undefined) throw new NotFoundError('definition', id);
+      if (removed === undefined) throw domainError('NOT_FOUND', `Unknown definition: ${id}`, { id });
       return {
         definitions: current.filter((candidate) => candidate.id !== id),
-        value: clone(removed),
+        value: structuredClone(removed),
       };
     });
   }
@@ -778,9 +782,9 @@ export class DefinitionsCapability {
     templateId: string,
   ): Target {
     const template = this.get(templateId);
-    if (template === undefined) throw new NotFoundError('template', templateId);
+    if (template === undefined) throw domainError('NOT_FOUND', `Unknown template: ${templateId}`, { id: templateId });
     if (template.kind !== 'template') {
-      throw new InvalidInputError(`Definition "${templateId}" is not a template`, {
+      throw domainError('INVALID_INPUT', `Definition "${templateId}" is not a template`, {
         id: templateId,
         kind: template.kind,
       });
@@ -803,7 +807,7 @@ export function validateDefinition(
   unrecognized?: string[],
 ): void {
   if (definition === null || typeof definition !== 'object') {
-    throw new InvalidInputError('Definition must be an object');
+    throw domainError('INVALID_INPUT', 'Definition must be an object');
   }
   validateId(definition.id);
   validateBoundedString(definition.name, 'definition name', 256);
@@ -818,7 +822,8 @@ export function validateDefinition(
     case 'template':
       assertExactKeys(definition, ['kind', 'id', 'name', 'defaults'], 'template definition', unrecognized);
       assertExactKeys(definition.defaults, ['content', 'styleId', 'placement', 'routing'], 'template defaults', unrecognized);
-      assertJson(definition.defaults, 'template defaults');
+      assertJson(definition.defaults, 'template defaults', TEMPLATE_JSON_BOUNDS, (_failure, message, details) =>
+        domainError('INVALID_INPUT', message, details));
       return;
     case 'terminator':
       assertExactKeys(definition, [
@@ -826,11 +831,11 @@ export function validateDefinition(
       ], 'terminator definition', unrecognized);
       validateDeclarativeGeometry(definition, unrecognized);
       if (definition.fill !== 'filled' && definition.fill !== 'outline') {
-        throw new InvalidInputError('Terminator fill must be filled or outline');
+        throw domainError('INVALID_INPUT', 'Terminator fill must be filled or outline');
       }
       if (definition.sizing !== undefined
         && definition.sizing !== 'text-height' && definition.sizing !== 'line-width') {
-        throw new InvalidInputError('Terminator sizing must be text-height or line-width');
+        throw domainError('INVALID_INPUT', 'Terminator sizing must be text-height or line-width');
       }
       return;
     case 'enclosure':
@@ -840,11 +845,11 @@ export function validateDefinition(
       validateDeclarativeGeometry(definition, unrecognized);
       if (definition.aspect !== undefined
         && definition.aspect !== 'free' && definition.aspect !== 'square') {
-        throw new InvalidInputError('Enclosure aspect must be free or square');
+        throw domainError('INVALID_INPUT', 'Enclosure aspect must be free or square');
       }
       if (definition.corners !== undefined
         && definition.corners !== 'sharp' && definition.corners !== 'radiused') {
-        throw new InvalidInputError('Enclosure corners must be sharp or radiused');
+        throw domainError('INVALID_INPUT', 'Enclosure corners must be sharp or radiused');
       }
       return;
     default:
@@ -854,7 +859,7 @@ export function validateDefinition(
   }
 }
 
-export function validateDeclarativeGeometry(
+function validateDeclarativeGeometry(
   definition: TerminatorDefinition | EnclosureDefinition,
   unrecognized?: string[],
 ): void {
@@ -866,13 +871,13 @@ export function validateDeclarativeGeometry(
   validateContainedPoint(definition.attachment.point, definition.bounds, 'attachment point');
   validatePoint(definition.attachment.direction, 'attachment direction');
   if (Math.hypot(definition.attachment.direction.x, definition.attachment.direction.y) < 1e-9) {
-    throw new InvalidInputError('Attachment direction must not be zero');
+    throw domainError('INVALID_INPUT', 'Attachment direction must not be zero');
   }
   if (!Array.isArray(definition.commands) || definition.commands.length < 2 || definition.commands.length > 256) {
-    throw new InvalidInputError('Declarative geometry must contain 2–256 path commands');
+    throw domainError('INVALID_INPUT', 'Declarative geometry must contain 2–256 path commands');
   }
   if (definition.commands[0]?.command !== 'move') {
-    throw new InvalidInputError('Declarative geometry must begin with a move command');
+    throw domainError('INVALID_INPUT', 'Declarative geometry must begin with a move command');
   }
   for (const command of definition.commands) {
     switch (command.command) {
@@ -897,7 +902,7 @@ export function validateDeclarativeGeometry(
         assertExactKeys(command, ['command'], 'close command', unrecognized);
         break;
       default:
-        throw new InvalidInputError('Unsupported declarative path command');
+        throw domainError('INVALID_INPUT', 'Unsupported declarative path command');
     }
   }
 }
@@ -916,14 +921,14 @@ export function definitionToJson(
   unrecognized: string[] = [],
 ): JsonObject {
   validateDefinition(definition, unrecognized);
-  return clone(definition) as unknown as JsonObject;
+  return structuredClone(definition) as unknown as JsonObject;
 }
 
 export function definitionFromJson(
   value: JsonObject,
   unrecognized: string[] = [],
 ): TypedDefinition {
-  const definition = clone(value) as unknown as TypedDefinition;
+  const definition = structuredClone(value) as unknown as TypedDefinition;
   validateDefinition(definition, unrecognized);
   return definition;
 }
@@ -1064,7 +1069,7 @@ function validateStyle(style: StyleDefinition): void {
   if (style.labelTerminatorId !== undefined) validateId(style.labelTerminatorId, 'Style labelTerminatorId');
   for (const [field, value] of [['lineWidth', style.lineWidth], ['fontSize', style.fontSize]] as const) {
     if (!Number.isFinite(value) || value <= 0 || value > 1_000) {
-      throw new InvalidInputError(`${field} must be finite and positive`, { field, value });
+      throw domainError('INVALID_INPUT', `${field} must be finite and positive`, { field, value });
     }
   }
   if (style.landing !== undefined) validateLanding(style.landing);
@@ -1080,10 +1085,12 @@ function validateLanding(landing: StyleLanding): void {
   validateNonNegative(landing.length, 'landing length');
   validateNonNegative(landing.gap, 'landing gap');
   if (landing.side !== undefined && !LANDING_SIDES.includes(landing.side)) {
-    throw new InvalidInputError('Landing side must be auto, left, right, top, or bottom', { side: landing.side });
+    throw domainError('INVALID_INPUT', 'Landing side must be auto, left, right, top, or bottom', {
+      side: landing.side,
+    });
   }
   if (landing.render !== undefined && !LANDING_RENDERS.includes(landing.render)) {
-    throw new InvalidInputError('Landing render must be shoulder, underline, or none', {
+    throw domainError('INVALID_INPUT', 'Landing render must be shoulder, underline, or none', {
       render: landing.render,
     });
   }
@@ -1105,22 +1112,22 @@ function validateContentBox(content: StyleContentBox): void {
   if (content.backgroundOpacity !== undefined
     && (!Number.isFinite(content.backgroundOpacity)
       || content.backgroundOpacity < 0 || content.backgroundOpacity > 1)) {
-    throw new InvalidInputError('Background opacity must be between 0 and 1', {
+    throw domainError('INVALID_INPUT', 'Background opacity must be between 0 and 1', {
       backgroundOpacity: content.backgroundOpacity,
     });
   }
   if (content.align !== undefined && !TEXT_ALIGNS.includes(content.align)) {
-    throw new InvalidInputError('Content align must be start, middle, or end', { align: content.align });
+    throw domainError('INVALID_INPUT', 'Content align must be start, middle, or end', { align: content.align });
   }
   if (content.weight !== undefined && !TEXT_WEIGHTS.includes(content.weight)) {
-    throw new InvalidInputError('Content weight must be normal or bold', { weight: content.weight });
+    throw domainError('INVALID_INPUT', 'Content weight must be normal or bold', { weight: content.weight });
   }
 }
 
 function validateNonNegative(value: number | undefined, label: string): void {
   if (value === undefined) return;
   if (!Number.isFinite(value) || value < 0 || value > 1_000) {
-    throw new InvalidInputError(`${label} must be finite, non-negative, and bounded`, { value });
+    throw domainError('INVALID_INPUT', `${label} must be finite, non-negative, and bounded`, { value });
   }
 }
 
@@ -1311,7 +1318,7 @@ function validateBounds(bounds: DefinitionBounds): void {
   if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
     || bounds.width <= 0 || bounds.height <= 0
     || bounds.width > 100_000 || bounds.height > 100_000) {
-    throw new InvalidInputError('Definition bounds must be finite, positive, and bounded');
+    throw domainError('INVALID_INPUT', 'Definition bounds must be finite, positive, and bounded');
   }
 }
 
@@ -1319,7 +1326,7 @@ function validatePoint(point: Vec2, label: string): void {
   if (point === null || typeof point !== 'object'
     || !Number.isFinite(point.x) || !Number.isFinite(point.y)
     || Math.abs(point.x) > 1_000_000 || Math.abs(point.y) > 1_000_000) {
-    throw new InvalidInputError(`${label} must be a finite bounded point`);
+    throw domainError('INVALID_INPUT', `${label} must be a finite bounded point`);
   }
 }
 
@@ -1340,13 +1347,13 @@ function validateContainedPoint(point: Vec2, bounds: DefinitionBounds, label: st
 function validateId(id: string, label = 'Definition id'): void {
   if (typeof id !== 'string' || id.length === 0 || id.length > 128
     || !/^[a-zA-Z][a-zA-Z0-9._:-]*$/u.test(id)) {
-    throw new InvalidInputError(`${label} is invalid`, { id });
+    throw domainError('INVALID_INPUT', `${label} is invalid`, { id });
   }
 }
 
 function validateBoundedString(value: string, label: string, maximum: number): void {
   if (typeof value !== 'string' || value.length === 0 || value.length > maximum) {
-    throw new InvalidInputError(`${label} must contain 1–${maximum} characters`);
+    throw domainError('INVALID_INPUT', `${label} must contain 1–${maximum} characters`);
   }
 }
 
@@ -1354,61 +1361,6 @@ function validateColor(value: string, label: string): void {
   if (typeof value !== 'string' || !/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/iu.test(value)) {
     throw domainError('INVALID_DEFINITION', `${label} must be a hexadecimal color`);
   }
-}
-
-/**
- * Strict when authoring, forgiving when loading — the same rule as everywhere else.
- *
- * Loading, an unrecognised field belongs to a newer version, so it is reported and carried through.
- * Authoring, it is a typo, and the author is told about it at the point they made it.
- */
-function assertExactKeys(
-  value: object,
-  allowed: readonly string[],
-  label: string,
-  unrecognized?: string[],
-): void {
-  const allowedSet = new Set(allowed);
-  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
-  if (unknown.length === 0) return;
-  if (unrecognized === undefined) {
-    throw domainError('INVALID_DEFINITION', `${label} contains unsupported fields`, { unknown });
-  }
-  for (const key of unknown) unrecognized.push(`${label}.${key}`);
-}
-
-function assertJson(value: unknown, label: string): asserts value is JsonValue {
-  const seen = new Set<object>();
-  let count = 0;
-  const visit = (candidate: unknown, depth: number): void => {
-    count += 1;
-    if (count > 2_048 || depth > 16) {
-      throw new InvalidInputError(`${label} exceeds JSON bounds`);
-    }
-    if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') return;
-    if (typeof candidate === 'number') {
-      if (!Number.isFinite(candidate)) throw new InvalidInputError(`${label} contains a non-finite number`);
-      return;
-    }
-    if (typeof candidate !== 'object') throw new InvalidInputError(`${label} must be declarative JSON`);
-    if (seen.has(candidate)) throw new InvalidInputError(`${label} contains a cycle`);
-    seen.add(candidate);
-    if (Array.isArray(candidate)) {
-      if (candidate.length > 512) throw new InvalidInputError(`${label} array is too large`);
-      for (const child of candidate) visit(child, depth + 1);
-    } else {
-      const entries = Object.entries(candidate);
-      if (entries.length > 256) throw new InvalidInputError(`${label} object is too large`);
-      for (const [key, child] of entries) {
-        if (key.length > 128 || key === '__proto__' || key === 'constructor') {
-          throw new InvalidInputError(`${label} contains an unsafe key`, { key });
-        }
-        visit(child, depth + 1);
-      }
-    }
-    seen.delete(candidate);
-  };
-  visit(value, 0);
 }
 
 function countJsonString(value: JsonValue | undefined, target: string): number {
@@ -1419,16 +1371,4 @@ function countJsonString(value: JsonValue | undefined, target: string): number {
   let total = 0;
   for (const child of Object.values(value)) total += countJsonString(child, target);
   return total;
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
-  return value;
 }

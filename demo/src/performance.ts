@@ -35,7 +35,6 @@ interface PerformanceReport {
   readonly environment: Readonly<{
     engine: 'chromium';
     version: string;
-    profile: string;
     viewport: string;
     devicePixelRatio: number;
   }>;
@@ -109,7 +108,6 @@ async function run(
     environment: Object.freeze({
       engine: 'chromium',
       version: /(?:Headless)?Chrome\/([^ ]+)/u.exec(navigator.userAgent)?.[1] ?? 'unknown',
-      profile: 'playwright-1.61.1-chromium-149.0.7827.55-1280x720@1',
       viewport: '1280x720',
       devicePixelRatio: window.devicePixelRatio,
     }),

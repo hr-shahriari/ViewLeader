@@ -21,7 +21,7 @@ export interface Bounds2 {
  * viewport so the rectangle keeps its place when the window is resized; pixel values pass straight
  * through.
  */
-export function resolveOrganizationRect(value: OrganizationRect, viewport: Rect): Rect {
+function resolveOrganizationRect(value: OrganizationRect, viewport: Rect): Rect {
   if (value.unit === 'pixels') return { ...value.rect };
   return {
     x: viewport.x + value.rect.x * viewport.width,
@@ -61,11 +61,10 @@ function corners(world: { min: Vec3; max: Vec3 }): readonly Vec3[] {
  * screen when you are zoomed in close. Corners behind the camera cannot be projected at all and are
  * skipped; if none of them project, there is no frame this pass.
  */
-export function projectWorldAabb(
+function projectWorldAabb(
   world: { min: Vec3; max: Vec3 },
   project: (point: Vec3) => Vec2 | null,
   viewport: { readonly width: number; readonly height: number },
-  margin = 0,
 ): Bounds2 | undefined {
   let minX = Infinity;
   let minY = Infinity;
@@ -82,10 +81,10 @@ export function projectWorldAabb(
     maxY = Math.max(maxY, point.y);
   }
   if (!any) return undefined;
-  minX = Math.max(0, minX - margin);
-  minY = Math.max(0, minY - margin);
-  maxX = Math.min(viewport.width, maxX + margin);
-  maxY = Math.min(viewport.height, maxY + margin);
+  minX = Math.max(0, minX);
+  minY = Math.max(0, minY);
+  maxX = Math.min(viewport.width, maxX);
+  maxY = Math.min(viewport.height, maxY);
   if (maxX - minX < 1 || maxY - minY < 1) return undefined;
   return { min: { x: minX, y: minY }, max: { x: maxX, y: maxY } };
 }
@@ -101,9 +100,6 @@ export class BoundaryMemory {
   public resolve(current: Bounds2 | undefined): Bounds2 | undefined {
     if (current !== undefined) this.#last = current;
     return this.#last;
-  }
-  public clear(): void {
-    this.#last = undefined;
   }
 }
 
@@ -122,15 +118,14 @@ export function resolveLayoutFrame(params: {
   readonly worldBounds?: { min: Vec3; max: Vec3 } | null;
   readonly project: (point: Vec3) => Vec2 | null;
   readonly viewport: { readonly width: number; readonly height: number };
-  readonly margin?: number;
   readonly memory: BoundaryMemory;
 }): Bounds2 | undefined {
-  const { layoutFrame, worldBounds, project, viewport, margin = 0, memory } = params;
+  const { layoutFrame, worldBounds, project, viewport, memory } = params;
   if (layoutFrame) {
     return rectToBounds(resolveOrganizationRect(layoutFrame, { x: 0, y: 0, width: viewport.width, height: viewport.height }));
   }
   if (worldBounds) {
-    return memory.resolve(projectWorldAabb(worldBounds, project, viewport, margin));
+    return memory.resolve(projectWorldAabb(worldBounds, project, viewport));
   }
   return memory.resolve(undefined);
 }

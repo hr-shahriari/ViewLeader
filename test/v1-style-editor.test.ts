@@ -160,14 +160,14 @@ describe('writing one field', () => {
     const ids = ['a', 'b', 'c', 'd', 'e'];
     for (const id of ids) leader.annotations.create(note(id));
     leader.annotations.select(ids);
-    const editor = new StyleEditor(leader, { labels: { set: 'Recolour selection' } });
+    const editor = new StyleEditor(leader);
 
     const before = leader.history.getSnapshot().undoCount;
     editor.set('lineColor', '#ff0000');
 
     // Unwrapped, each `update()` opens its own transaction and this would be five.
     expect(leader.history.getSnapshot().undoCount).toBe(before + 1);
-    expect(leader.history.getSnapshot().undoLabel).toBe('Recolour selection');
+    expect(leader.history.getSnapshot().undoLabel).toBe('Change annotation style');
     for (const id of ids) expect(leader.annotations.resolvedStyle(id)!.lineColor).toBe('#ff0000');
 
     leader.history.undo();

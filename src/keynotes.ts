@@ -42,42 +42,14 @@ export function keynotesOf(annotations: readonly Annotation[]): readonly Keynote
     .map(([key, annotationIds]) => ({ key, annotationIds }));
 }
 
-/**
- * Breaks a code into alternating number and non-number pieces: `'09 91 23.A10'` becomes
- * `['09', ' ', '91', ' ', '23', '.', 'A', '10']`. Numbers can then be compared as numbers and
- * letters as letters.
- */
-function runsOf(key: string): readonly string[] {
-  return key.match(/\d+|\D+/g) ?? [];
-}
+/** Numbers by value, everything else alphabetically — the order a drafter reads codes in. */
+const collator = new Intl.Collator('en', { numeric: true });
 
 /**
- * Compares two codes piece by piece: numbers by value, everything else alphabetically.
- *
- * A number compared against a letter has no meaningful numeric answer, so those fall back to a
- * plain text comparison. Codes of different lengths are fine — the shorter one sorts first for as
- * long as the two agree, which is how a plain text sort would treat a prefix too.
+ * `'9'` and `'09'` collate as the same number, so plain string order breaks that tie. Without it
+ * the two spellings would land in whatever order they were created, and the same document could
+ * group differently from one call to the next.
  */
 function compareNaturalKeys(left: string, right: string): number {
-  const a = runsOf(left);
-  const b = runsOf(right);
-  const length = Math.min(a.length, b.length);
-  // '9' and '09' mean the same number but are not the same string, so they still need a stable
-  // order between them. That tie-break is remembered and only used if everything else matches —
-  // deciding on it immediately would sort '9 91 23' before '09 91 03', letting a leading zero
-  // outrank the segment that genuinely differs.
-  let padding = 0;
-  for (let index = 0; index < length; index += 1) {
-    const runA = a[index]!;
-    const runB = b[index]!;
-    if (/^\d/.test(runA) && /^\d/.test(runB)) {
-      const diff = Number(runA) - Number(runB);
-      if (diff !== 0) return diff;
-      if (padding === 0) padding = runA.length - runB.length;
-    } else if (runA !== runB) {
-      return runA < runB ? -1 : 1;
-    }
-  }
-  if (a.length !== b.length) return a.length - b.length;
-  return padding;
+  return collator.compare(left, right) || (left < right ? -1 : left > right ? 1 : 0);
 }

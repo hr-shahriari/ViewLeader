@@ -1,15 +1,17 @@
 // The workbench is host composition over independent public capabilities — annotations, plugin content,
 // markup, saved views, selection, and history — in one runtime. There is no ViewLeader "UI"; the host
 // wires the capabilities it wants. This page composes a review and then disposes everything cleanly.
-import { ViewLeader, type NeutralViewerState, type ViewerStateAdapter } from 'viewleader';
+import { ViewLeader } from 'viewleader';
 import { markdownPlugin } from 'viewleader/markdown';
 import { createThreeAdapter } from 'viewleader/three';
 import { exportVectorSheet } from 'viewleader/interchange';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
+import { mountOrganizationControls } from '../shared/organizationControls';
 import {
   createExampleHarness,
+  createViewerStateAdapter,
   exposeExampleManager,
   markExampleFailed,
   markExampleReady,
@@ -24,47 +26,15 @@ try {
   const harness = createExampleHarness(viewport);
   const building = createMockBuilding();
   harness.scene.add(building.root);
-  const { camera, controls } = harness;
-
-  const capture = (): NeutralViewerState => ({
-    camera: {
-      projection: 'perspective',
-      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-      direction: { x: controls.target.x - camera.position.x, y: controls.target.y - camera.position.y, z: controls.target.z - camera.position.z },
-      up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
-      verticalFieldOfView: camera.fov,
-      near: camera.near,
-      far: camera.far,
-    },
-    modelVisibility: [],
-    elementVisibility: [],
-    selection: [],
-    colorOverrides: [],
-    clippingPlanes: [],
-  });
-  const applyState = (state: NeutralViewerState): void => {
-    const c = state.camera;
-    camera.position.set(c.position.x, c.position.y, c.position.z);
-    controls.target.set(c.position.x + c.direction.x, c.position.y + c.direction.y, c.position.z + c.direction.z);
-    if (c.projection === 'perspective') camera.fov = c.verticalFieldOfView;
-    camera.updateProjectionMatrix();
-    controls.update();
-  };
-  const viewerState: ViewerStateAdapter<{ prior: NeutralViewerState; next: NeutralViewerState }> = {
-    capture,
-    prepare: (next) => ({ prior: capture(), next }),
-    apply: ({ next }) => applyState(next),
-    rollback: ({ prior }) => applyState(prior),
-  };
 
   const adapters = {
     ...createThreeAdapter({
-      camera,
+      camera: harness.camera,
       renderer: harness.renderer,
       modelBounds: () => [building.root],
       occlusion: { objects: () => [building.root], epsilon: SELF_OCCLUSION_EPSILON },
     }),
-    viewerState,
+    viewerState: createViewerStateAdapter(harness),
   };
   const leader = new ViewLeader({ boundary: harness.boundary, adapters, plugins: [markdownPlugin] });
   // Kept, because `Dispose` below has to stop them. A frame callback that outlives the instance it
@@ -73,6 +43,7 @@ try {
   leader.update();
 
   const bar = createControlBar();
+  const organizationControls = mountOrganizationControls(bar, leader, (message) => bar.status(message));
   // What each policy does to a leg that is behind the building. `fade` is keyed to the WHOLE
   // annotation being buried, so its wording says "every leg" rather than promising a dimming a note
   // with a leg still in view will not show — nearly every note here has exactly one leg, which is
@@ -101,11 +72,14 @@ try {
       content: { kind: 'plugin:viewleader.markdown', pluginId: 'viewleader.markdown', schemaVersion: 2, data: { source: '**Integrated** review' } },
     });
     // Ink markup on a drawing plane.
-    const ink = leader.authoring.markup.begin('ink');
-    ink.establishPlane({ origin: { x: 0, y: 0, z: 3.1 }, xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, normal: { x: 0, y: 0, z: 1 } });
-    ink.appendInkPoint({ x: -1.5, y: 1.5 });
-    ink.appendInkPoint({ x: 1.5, y: 2.5 });
-    leader.authoring.markup.commitInk(ink, { id: 'ink' });
+    void leader.authoring.markup.start({
+      kind: 'ink',
+      commit: { id: 'ink' },
+      plane: { origin: { x: 0, y: 0, z: 3.1 }, xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, normal: { x: 0, y: 0, z: 1 } },
+    });
+    leader.authoring.markup.appendInkPoint({ x: -1.5, y: 1.5 });
+    leader.authoring.markup.appendInkPoint({ x: 1.5, y: 2.5 });
+    leader.authoring.markup.complete();
     // Saved view + selection.
     await leader.views.save({ id: 'review', name: 'Review' });
     await leader.views.activate('review');
@@ -207,6 +181,7 @@ try {
     crowd.disabled = true;
     badge.disabled = true;
     sheet.disabled = true;
+    organizationControls.disabled(true);
     bar.status('Disposed — no ViewLeader-owned resources remain in the boundary.');
   });
   bar.status('One runtime, many capabilities. Compose a review, then dispose it.');

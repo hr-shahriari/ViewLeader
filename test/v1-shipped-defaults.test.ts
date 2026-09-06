@@ -185,7 +185,7 @@ describe('the shipped font stack', () => {
     // except here.
     //
     // Asserted against the function rather than the DOM because the facade guards both doors into
-    // an unresolvable styleId: `annotations.create` throws NotFoundError and `documents.replace`
+    // an unresolvable styleId: `annotations.create` throws NOT_FOUND and `documents.replace`
     // throws InvalidDocumentError, so no drawn `<text>` can reach it from out here.
     const theme: Theme = { ...CAD_PAPER, fontStack: "'Fixture Grotesk', sans-serif" };
     expect(defaultRenderStyle(theme).fontFamily).toBe(theme.fontStack);

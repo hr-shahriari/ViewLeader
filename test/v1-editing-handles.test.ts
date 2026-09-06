@@ -376,7 +376,7 @@ describe('handles: dropping a grip', () => {
     leader.update();
     expect(leader.geometry.of('a1')!.handles[0]!.at.x).not.toBeCloseTo(handle.at.x, 3);
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
     expect(leader.geometry.of('a1')!.handles[0]!.at).toEqual(handle.at);
     leader.dispose();

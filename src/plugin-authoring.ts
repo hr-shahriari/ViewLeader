@@ -1,5 +1,5 @@
 import type { DocumentEngine } from './document.js';
-import { domainError, DisposedError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import {
   type DeclarativePrimitive,
   type ExtensionRuntime,
@@ -109,11 +109,17 @@ export class PluginAuthoringController {
     this.cancel('preempted');
     this.#preemptBuiltIn();
     const state = this.#extensions.beginTool(options.pluginId, options.toolId);
-    const lease = this.#interaction?.acquire('authoring');
+    const draft = options.draft === undefined ? undefined : structuredClone(options.draft);
+    let lease: InteractionLease | undefined;
+    try {
+      lease = this.#interaction?.acquire('authoring');
+    } catch (cause) {
+      throw new AdapterError('interaction lease acquisition', cause);
+    }
     this.#active = {
       pluginId: options.pluginId,
       toolId: options.toolId,
-      ...(options.draft === undefined ? {} : { draft: structuredClone(options.draft) }),
+      ...(draft === undefined ? {} : { draft }),
       ...(lease === undefined ? {} : { lease }),
       state,
       preview: Object.freeze([]),
@@ -268,26 +274,13 @@ export class PluginAuthoringController {
       phase: active === undefined ? 'idle' : 'active',
       pluginId: active?.pluginId ?? null,
       toolId: active?.toolId ?? null,
-      state: active === undefined ? null : immutableClone(active.state),
-      preview: active === undefined
-        ? Object.freeze([])
-        : immutableClone(active.preview),
+      state: active === undefined ? null : structuredClone(active.state),
+      preview: active === undefined ? Object.freeze([]) : structuredClone(active.preview),
       status: this.#status,
     });
   }
 
   #assertActive(): void {
-    if (this.#disposed) throw new DisposedError();
+    if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
   }
-}
-
-function immutableClone<Value>(value: Value): Value {
-  const clone = structuredClone(value);
-  const freeze = (candidate: unknown): void => {
-    if (candidate === null || typeof candidate !== 'object' || Object.isFrozen(candidate)) return;
-    Object.freeze(candidate);
-    for (const child of Object.values(candidate)) freeze(child);
-  };
-  freeze(clone);
-  return clone;
 }

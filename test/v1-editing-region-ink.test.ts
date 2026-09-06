@@ -139,13 +139,14 @@ function dragRegionHandle(leader: ViewLeader, id: string, index: number, to: Vec
   leader.update();
 }
 
-/** Commits an ink stroke through the public markup session, which is the only way to create one. */
+/** Commits an ink stroke through the public markup tool, which is the only way to create one. */
 function createInk(leader: ViewLeader, id: string, points: readonly Vec2[]): InkAnnotation {
-  const session = leader.authoring.markup.begin('ink');
+  const markup = leader.authoring.markup;
   // Ink carries a full `DrawingPlane`; a region anchor carries the core three-field form instead.
-  session.establishPlane({ ...FLAT, yAxis: { x: 0, y: 1, z: 0 } });
-  for (const point of points) session.appendInkPoint(point);
-  return leader.authoring.markup.commitInk(session, { id });
+  void markup.start({ kind: 'ink', commit: { id }, plane: { ...FLAT, yAxis: { x: 0, y: 1, z: 0 } } });
+  for (const point of points) markup.appendInkPoint(point);
+  markup.complete();
+  return markup.getInk(id)!;
 }
 
 describe('region grips: what is published', () => {
@@ -344,7 +345,7 @@ describe('region grips: moving on its own plane', () => {
     expect(leader.geometry.of('a1')!.regionHandles[0]!.at.x).toBeCloseTo(400, 3);
     expect(leader.annotations.get('a1')).toEqual(before);
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
     expect(leader.geometry.of('a1')!.regionHandles[0]!.at.x).toBeCloseTo(300, 3);
     expect(leader.annotations.get('a1')).toEqual(before);
@@ -547,6 +548,26 @@ describe('ink grips', () => {
     expect(ink.points[1]!.y).toBeCloseTo(10, 6);
     expect(ink.points[0]).toEqual({ x: 0, y: 0 });
     expect(() => validateInk(ink)).not.toThrow();
+    leader.dispose();
+  });
+
+  it('clears the drawn ink preview after release, so undo restores the original stroke', () => {
+    const { leader } = makeLeader();
+    createInk(leader, 'ink-1', [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }]);
+    leader.update();
+    const drawn = leader.geometry.ofInk('ink-1')!.points.map((point) => ({ ...point }));
+
+    leader.editing.beginInkPointDrag('ink-1', 1, at(450, 250));
+    leader.editing.pointerMove(at(450, 200));
+    leader.editing.pointerUp(at(450, 200));
+    leader.update();
+    const moved = leader.geometry.ofInk('ink-1')!.points[1]!;
+    expect(moved.x).toBeCloseTo(450);
+    expect(moved.y).toBeCloseTo(200);
+
+    leader.history.undo();
+    leader.update();
+    expect(leader.geometry.ofInk('ink-1')!.points).toEqual(drawn);
     leader.dispose();
   });
 

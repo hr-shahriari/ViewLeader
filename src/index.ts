@@ -33,7 +33,6 @@ export type {
   ScreenHitKind,
 } from './render.js';
 export type {
-  EditingCancellationReason,
   EditingDragKind,
   EditingOptions,
   EditingSnapshot,
@@ -96,14 +95,8 @@ export type {
 
 export {
   AdapterError,
-  DisposedError,
   DocumentTooLargeError,
-  DuplicateIdError,
-  InvalidConfigurationError,
   InvalidDocumentError,
-  InvalidInputError,
-  InvariantViolationError,
-  NotFoundError,
   ViewLeaderError,
   domainError,
   type ViewLeaderErrorCode,
@@ -124,13 +117,13 @@ export type {
   InteractionLease,
   ModelBounds,
   ModelBoundsAdapter,
-  NeutralViewerStateAdapter,
   NormalizedPointerInput,
   OcclusionAdapter,
   OcclusionResult,
   OcclusionSample,
   ProjectedPoint,
   ProjectionAdapter,
+  ProjectedBoundsResult,
   ResolvedHostImage,
   SurfacePickResult,
   SurfacePickingAdapter,
@@ -163,6 +156,7 @@ export {
   type MarkupAnnotationDraft,
   type MarkupAuthoringCancellationReason,
   type MarkupAuthoringIntegration,
+  type MarkupAuthoringOptions,
   type MarkupAuthoringOutcome,
   type MarkupAuthoringSnapshot,
   type StartInkMarkupAuthoringOptions,
@@ -171,8 +165,6 @@ export {
 } from './markup-authoring-capability.js';
 
 export {
-  DEFAULT_GEOMETRY_LIMITS,
-  MarkupAuthoringSession,
   addRegionVertex,
   createInk,
   createRegionAnchor,
@@ -195,7 +187,6 @@ export {
   type ClosedRegionGeometry,
   type DrawingPlane,
   type EllipseRegionGeometry,
-  type GeometryLimits,
   type InkAnnotation,
   type MarkupAuthoringPreview,
   type MarkupToolKind,
@@ -300,8 +291,6 @@ export {
   type BcfParseOptions,
   type BcfSavedView,
   type BcfTopic,
-  type DocumentLoadMode,
-  type DocumentLoadReport,
   type ParsedBcf,
   type ValidationReport,
 } from './interchange/types.js';

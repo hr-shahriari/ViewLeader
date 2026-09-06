@@ -26,21 +26,38 @@ export type EditableTextField = 'text' | 'title' | 'primary' | 'secondary' | 'la
 export type TextEditorCloseReason = 'commit' | 'cancel' | 'gone';
 
 /**
- * The field a bare double-click opens, or `undefined` when the kind carries no drawn text.
+ * Per kind: the field a bare double-click opens, and the one field — if any — where Enter inserts
+ * a newline instead of committing.
  *
- * `host-image.alt` is never drawn — it becomes `accessibleText` only — and plugin `data` is opaque
- * JSON core is documented never to read inside. Both need `initialValue` + `onCommit`.
+ * Absent kinds carry no drawn text. `host-image.alt` is never drawn — it becomes `accessibleText`
+ * only — and plugin `data` is opaque JSON core is documented never to read inside. Both need
+ * `initialValue` + `onCommit`.
+ *
+ * Multiline is a property of the field, not a setting: a note, a callout body and a split
+ * callout's second line are prose, while a tag, a grid bubble's label and a callout's title are
+ * marks and headings. A grid bubble with two lines is not a grid bubble. Newlines are real either
+ * way — `wrapText` splits on `\n` before wrapping — which is why the element is a textarea and not
+ * an input.
  */
+const TEXT_FIELDS: Partial<Record<
+  AnnotationContent['kind'],
+  { readonly primary: EditableTextField; readonly multiline?: EditableTextField }
+>> = {
+  'plain-note': { primary: 'text', multiline: 'text' },
+  tag: { primary: 'text' },
+  callout: { primary: 'text', multiline: 'text' },
+  'split-callout': { primary: 'primary', multiline: 'secondary' },
+  'symbolic-block': { primary: 'label' },
+};
+
+/** The field a bare double-click opens, or `undefined` when the kind carries no drawn text. */
 export function primaryTextField(content: AnnotationContent): EditableTextField | undefined {
-  switch (content.kind) {
-    case 'plain-note':
-    case 'tag':
-    case 'callout': return 'text';
-    case 'split-callout': return 'primary';
-    case 'symbolic-block': return 'label';
-    case 'host-image': return undefined;
-    default: return undefined;
-  }
+  return TEXT_FIELDS[content.kind]?.primary;
+}
+
+/** Whether Enter should insert a newline instead of committing. */
+export function isMultilineField(content: AnnotationContent, field: EditableTextField): boolean {
+  return TEXT_FIELDS[content.kind]?.multiline === field;
 }
 
 /** The stored string, or `undefined` when this kind has no such field — the caller then refuses. */
@@ -97,24 +114,6 @@ export function writeTextField(
   }
 }
 
-/**
- * Whether Enter should insert a newline instead of committing.
- *
- * Derived from the field rather than configured, because it is a property of the field: a note, a
- * callout body and a split callout's second line are prose, while a tag, a grid bubble's label and
- * a callout's title are marks and headings. A grid bubble with two lines is not a grid bubble.
- * Newlines are real either way — `wrapText` splits on `\n` before wrapping — which is why the
- * element is a textarea and not an input.
- */
-export function isMultilineField(content: AnnotationContent, field: EditableTextField): boolean {
-  switch (content.kind) {
-    case 'plain-note': return true;
-    case 'callout': return field === 'text';
-    case 'split-callout': return field === 'secondary';
-    default: return false;
-  }
-}
-
 /** What the editor needs from a `ViewLeader`. Narrow so a test can hand it a stub. */
 export interface TextEditorHost {
   readonly annotations: {
@@ -122,7 +121,11 @@ export interface TextEditorHost {
     update(id: string, patch: AnnotationPatch): unknown;
     subscribe(listener: () => void): () => void;
   };
-  readonly authoring: { getSnapshot(): { readonly phase: string } };
+  readonly authoring: {
+    getSnapshot(): { readonly phase: string };
+    readonly markup?: { getSnapshot(): { readonly phase: string } };
+    readonly plugins?: { getSnapshot(): { readonly phase: string } };
+  };
   readonly editing: {
     hitTestScreen(at: Vec2): { readonly kind: string; readonly id: string } | undefined;
   };
@@ -133,7 +136,7 @@ export interface TextEditorFollow {
   register(target: FollowTarget, element: Element, options?: FollowOptions): () => void;
 }
 
-export interface TextEditorOptions {
+interface TextEditorOptions {
   readonly host: TextEditorHost;
   /** Optional: without it the field still works, it just does not track the label. */
   readonly follow?: TextEditorFollow;
@@ -152,7 +155,7 @@ export interface OpenTextEditorOptions {
 }
 
 /** Enough of a change event for React's synthetic one and the DOM's own to both satisfy it. */
-export interface TextInputEventLike {
+interface TextInputEventLike {
   readonly target: unknown;
 }
 
@@ -162,7 +165,7 @@ export interface KeyEventLike {
   preventDefault(): void;
 }
 
-export interface DoubleClickEventLike {
+interface DoubleClickEventLike {
   readonly clientX: number;
   readonly clientY: number;
   readonly currentTarget: unknown;
@@ -229,7 +232,6 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
   #open: OpenState | undefined;
   #element: Element | null = null;
   #releaseFollow: (() => void) | undefined;
-  #releaseGuard: (() => void) | undefined;
   #unsubscribe: (() => void) | undefined;
   #disposed = false;
 
@@ -249,21 +251,17 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
 
   /**
    * Pass to the textarea as its ref. One stable identity, so a re-render neither detaches it in
-   * React nor re-fires it in Vue.
+   * React nor re-fires it in Vue. Registers the element with the follow registry.
    *
-   * Registers the element with the follow registry *and* installs a native `pointerdown` guard.
-   * Native, not a framework handler: React delegates to the root container, so `onPointerDown`
-   * runs after a listener on an intermediate boundary has already started dragging the label.
+   * A press inside the field belongs to the field: core's own pointer listener ignores presses
+   * from form controls (`isHostChrome` in `editing.ts`), so nothing here has to stop propagation.
    */
   public readonly ref = (element: Element | null): void => {
     if (this.#element === element) return;
-    this.#releaseGuard?.();
-    this.#releaseGuard = undefined;
     this.#releaseFollow?.();
     this.#releaseFollow = undefined;
     this.#element = element;
     if (element === null) return;
-    this.#releaseGuard = installPointerGuard(element);
     this.#trackLabel();
     this.#focus();
   };
@@ -362,8 +360,6 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
     this.#unsubscribe = undefined;
     this.#releaseFollow?.();
     this.#releaseFollow = undefined;
-    this.#releaseGuard?.();
-    this.#releaseGuard = undefined;
     this.#element = null;
     this.#publish();
     this.#listeners.clear();
@@ -460,7 +456,12 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
   }
 
   #doubleClick(event: DoubleClickEventLike): void {
-    if (this.#disposed || this.#host.authoring.getSnapshot().phase !== 'idle') return;
+    if (
+      this.#disposed
+      || this.#host.authoring.getSnapshot().phase !== 'idle'
+      || (this.#host.authoring.markup?.getSnapshot().phase ?? 'idle') !== 'idle'
+      || (this.#host.authoring.plugins?.getSnapshot().phase ?? 'idle') !== 'idle'
+    ) return;
     const hit = this.#host.editing.hitTestScreen(localPoint(event));
     if (hit?.kind === 'label') this.open(hit.id);
   }
@@ -473,25 +474,6 @@ export class TextEditorController implements SnapshotSource<TextEditorSnapshot> 
 
 function directionOf(content: AnnotationContent): TextDirection {
   return 'direction' in content && content.direction !== undefined ? content.direction : 'auto';
-}
-
-/**
- * A press that begins in the field belongs to the field.
- *
- * Core hit-tests a pointerdown by screen position and never inspects its target, so a textarea
- * mounted inside the boundary — which is where a component renders — turns drag-selecting text
- * into a label drag with an undo step nobody asked for. Core carries the same guard; this is the
- * belt that keeps the component correct against an older core.
- */
-function installPointerGuard(element: Element): (() => void) | undefined {
-  const target = element as {
-    addEventListener?: (type: string, listener: (event: Event) => void) => void;
-    removeEventListener?: (type: string, listener: (event: Event) => void) => void;
-  };
-  if (typeof target.addEventListener !== 'function') return undefined;
-  const stop = (event: Event): void => { event.stopPropagation(); };
-  target.addEventListener('pointerdown', stop);
-  return () => { target.removeEventListener?.('pointerdown', stop); };
 }
 
 /**

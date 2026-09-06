@@ -222,15 +222,19 @@ describe('annotative scale doubles every drafting-unit size together', () => {
 
   it('takes ink strokes with it: an ink pen is a pen weight like any other', () => {
     const { root, leader } = fixture();
-    const session = leader.authoring.markup.begin('ink');
-    session.establishPlane({
-      origin: { x: 0, y: 0, z: 0 },
-      normal: { x: 0, y: 0, z: 1 },
-      xAxis: { x: 1, y: 0, z: 0 },
-      yAxis: { x: 0, y: 1, z: 0 },
+    const markup = leader.authoring.markup;
+    void markup.start({
+      kind: 'ink',
+      commit: { id: 'ink-1', styleId: 'plot' },
+      plane: {
+        origin: { x: 0, y: 0, z: 0 },
+        normal: { x: 0, y: 0, z: 1 },
+        xAxis: { x: 1, y: 0, z: 0 },
+        yAxis: { x: 0, y: 1, z: 0 },
+      },
     });
-    for (const point of [{ x: -2, y: -2 }, { x: 2, y: 2 }]) session.appendInkPoint(point);
-    leader.authoring.markup.commitInk(session, { id: 'ink-1', styleId: 'plot' });
+    for (const point of [{ x: -2, y: -2 }, { x: 2, y: 2 }]) markup.appendInkPoint(point);
+    markup.complete();
     leader.update();
     const stroke = (): number => Number(
       root.querySelector('path[data-ink-stroke]')?.getAttribute('stroke-width'),

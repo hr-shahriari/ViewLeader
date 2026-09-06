@@ -1,10 +1,9 @@
+import { crc32, deflateRawSync } from 'node:zlib';
 import { JSDOM } from 'jsdom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   escapeXml,
-  exportAxis,
   exportBcf,
-  importAxis,
   parseBcf,
   parseXmlGuarded,
   readArchive,
@@ -74,11 +73,14 @@ describe('M9 XML and archive micro-layer', () => {
     expect(await readArchive(corrupt)).toMatchObject({ valid: false });
   });
 
-  it('reports deflate feature absence before attempting decompression', async () => {
-    const archive = writeStoredArchive([{ name: 'a', data: encoder.encode('abc') }]);
-    const patched = archive.slice();
+  it('inflates a deflate entry through the platform decompressor', async () => {
+    // The writer only stores, so a deflate entry is a stored one with its headers rewritten to
+    // what a compressing writer would have put there: method 8, and the CRC and size of the
+    // original bytes rather than the compressed ones.
+    const original = encoder.encode(Array.from({ length: 200 }, (_, index) => `entry-${index}`).join('\n'));
+    const compressed = deflateRawSync(original);
+    const patched = writeStoredArchive([{ name: 'a', data: compressed }]).slice();
     const view = new DataView(patched.buffer);
-    view.setUint16(8, 8, true);
     let central = 0;
     for (let offset = 0; offset <= patched.length - 4; offset += 1) {
       if (view.getUint32(offset, true) === 0x02014b50) {
@@ -86,11 +88,14 @@ describe('M9 XML and archive micro-layer', () => {
         break;
       }
     }
-    view.setUint16(central + 10, 8, true);
-    expect(await readArchive(patched)).toMatchObject({
-      valid: false,
-      errors: [expect.stringContaining('requires a deflate decompressor')],
-    });
+    for (const [method, crc, size] of [[8, 14, 22], [central + 10, central + 16, central + 24]]) {
+      view.setUint16(method!, 8, true);
+      view.setUint32(crc!, crc32(original), true);
+      view.setUint32(size!, original.length, true);
+    }
+    const result = await readArchive(patched);
+    expect(result).toMatchObject({ valid: true, errors: [] });
+    expect(decoder.decode(result.entries[0]?.data)).toBe(decoder.decode(original));
   });
 });
 
@@ -131,7 +136,9 @@ describe('M9 BCF writer and tolerant reader', () => {
     embeddedDocument: { version: 1, annotations: [{ id: 'a' }] },
   };
 
-  it('uses stable valid topic ids and inverse axis maps', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('uses stable valid topic ids', () => {
     expect(stableBcfGuid('review-east')).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
@@ -139,25 +146,13 @@ describe('M9 BCF writer and tolerant reader', () => {
     expect(stableBcfGuid('123e4567-e89b-12d3-a456-426614174000')).toBe(
       '123e4567-e89b-12d3-a456-426614174000',
     );
-    const point = { x: 4, y: 5, z: 6 };
-    expect(importAxis(exportAxis(point, true), true)).toEqual(point);
-    expect(exportAxis(point)).toEqual(point);
-
-    // The convention, not the identity. The two maps are exact inverses, so the round trip above
-    // passes just as happily with the formulas swapped onto the wrong functions — which is how they
-    // shipped. Only a known vector says which side is which: a BCF file is IFC's Z-up, so Y-up
-    // `(0, 1, 0)` has to leave as `(0, 0, 1)`, and a file's `(0, 0, 1)` has to arrive as `(0, 1, 0)`.
-    expect(exportAxis({ x: 0, y: 1, z: 0 }, true)).toEqual({ x: 0, y: 0, z: 1 });
-    expect(importAxis({ x: 0, y: 0, z: 1 }, true)).toEqual({ x: 0, y: 1, z: 0 });
-    // Non-symmetric, because (0, 1, 0) alone cannot see a sign error on x or z.
-    expect(exportAxis({ x: 1, y: 2, z: 3 }, true)).toEqual({ x: 1, y: -3, z: 2 });
-    expect(importAxis({ x: 1, y: 2, z: 3 }, true)).toEqual({ x: 1, y: 3, z: -2 });
   });
 
   it('exports deterministic topic/viewpoint/comment/component/snapshot/document entries', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-02T03:04:05.000Z'));
     const options = {
       author: 'reviewer@example.test',
-      now: () => new Date('2026-01-02T03:04:05.000Z'),
       includeDocument: true,
       zUpToYUp: true,
       snapshot: (viewId: string) => viewId === 'review-east' ? encoder.encode('PNG') : undefined,
@@ -172,12 +167,19 @@ describe('M9 BCF writer and tolerant reader', () => {
     const viewpoint = archive.entries.find((entry) => entry.name.endsWith('/viewpoint.bcfv'));
     expect(decoder.decode(markup?.data)).toContain('<Comment>Clash\nMove duct</Comment>');
     expect(decoder.decode(markup?.data).match(/<Comment Guid=/g)).toHaveLength(1);
-    // The same check one level up, on the bytes a receiving application actually opens: this
-    // document's camera is Y-up `(0, 1, 0)`, so the Z-up viewpoint has to carry `(0, 0, 1)`.
-    // Written as `-1` on Z, the file opens rotated 180° about X in Solibri or Navisworks, and
-    // nothing inside this repo notices because the reader undoes it again.
+    // The axis convention, not the identity. Export and import are exact inverses, so a round trip
+    // passes just as happily with the formulas swapped onto the wrong sides — which is how they
+    // shipped, and nothing inside this repo noticed because the reader undid it again. Only the
+    // bytes a receiving application opens say which side is which: a BCF file is IFC's Z-up, so
+    // this document's Y-up `(0, 1, 0)` has to leave as `(0, 0, 1)`. Written as `-1` on Z, the file
+    // opens rotated 180° about X in Solibri or Navisworks. With export pinned here and the parse
+    // below equal to the original, import is pinned as its inverse.
     expect(decoder.decode(viewpoint?.data)).toContain(
       '<CameraUpVector><X>0</X><Y>0</Y><Z>1</Z></CameraUpVector>',
+    );
+    // Non-symmetric, because (0, 1, 0) alone cannot see a sign error on x or z.
+    expect(decoder.decode(viewpoint?.data)).toContain(
+      '<CameraViewPoint><X>1</X><Y>-3</Y><Z>2</Z></CameraViewPoint>',
     );
     expect(decoder.decode(viewpoint?.data)).toContain('<Visibility DefaultVisibility="true"/>');
     expect(decoder.decode(viewpoint?.data)).toContain('IfcGuid="IFC-DUCT-GUID"');

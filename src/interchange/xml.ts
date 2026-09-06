@@ -9,18 +9,6 @@ export function escapeXml(value: unknown): string {
     .replace(/'/g, '&apos;');
 }
 
-export function xmlElement(
-  name: string,
-  content: string,
-  attributes: Readonly<Record<string, string>> = {},
-): string {
-  const serializedAttributes = Object.entries(attributes)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => ` ${key}="${escapeXml(value)}"`)
-    .join('');
-  return `<${name}${serializedAttributes}>${content}</${name}>`;
-}
-
 export interface XmlParseResult {
   readonly valid: boolean;
   readonly document?: XmlDocumentLike;

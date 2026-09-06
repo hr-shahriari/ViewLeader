@@ -21,18 +21,19 @@ import {
   type FollowRegistry,
 } from 'viewleader/react';
 import { createThreeAdapter } from 'viewleader/three';
-import { Component, useEffect, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
+import { Component, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
+import { FOLLOWED, HINT, SWATCHES, TOOLBAR, handleStyle, seedNotes, swatchStyle } from '../shared/frameworkDemo';
 import {
   createExampleHarness,
   exposeExampleManager,
   markExampleFailed,
   markExampleReady,
 } from '../shared/harness';
-import { MOCK_ELEMENTS, SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
+import { SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
 
 try {
   const viewport = document.querySelector<HTMLElement>('#viewport');
@@ -77,18 +78,7 @@ try {
     }
   }
 
-  const NOTES = [
-    { key: 'roof', element: MOCK_ELEMENTS.roofSlab, title: 'Roof slab', text: 'RC 200 mm' },
-    { key: 'door', element: MOCK_ELEMENTS.frontDoor, title: 'Front door', text: 'D-04' },
-    { key: 'column', element: MOCK_ELEMENTS.cornerColumn, title: 'Corner column', text: 'C-12' },
-  ] as const;
-
-  const SWATCHES = ['#1f2937', '#b91c1c', '#047857'] as const;
-
   type LabelEditor = NonNullable<ReturnType<typeof useLabelTextEditor>>;
-
-  /** Absolutely positioned against the boundary; the registry writes the transform every frame. */
-  const followed: CSSProperties = { position: 'absolute', top: 0, left: 0, pointerEvents: 'auto' };
 
   /**
    * Handles for one annotation, drawn by this page rather than by core.
@@ -107,27 +97,7 @@ try {
     return (
       <>
         {entries.map((entry) => (
-          <div
-            key={entry.key}
-            ref={handles?.ref(entry)}
-            {...entry.props}
-            style={{
-              ...followed,
-              width: 9,
-              height: 9,
-              marginLeft: -5,
-              marginTop: -5,
-              cursor: entry.cursor,
-              // Square for the arrow end, round for anything that reshapes the leader — the same
-              // distinction core's own grips draw.
-              borderRadius: entry.kind === 'handle' ? 2 : 5,
-              // A midpoint inserts a bend rather than moving one, and hollow-versus-solid is the
-              // only thing on screen that says so.
-              background: entry.cursor === 'copy' ? '#fff' : '#2563eb',
-              border: '1.5px solid #2563eb',
-              boxSizing: 'border-box',
-            }}
-          />
+          <div key={entry.key} ref={handles?.ref(entry)} {...entry.props} style={handleStyle(entry)} />
         ))}
       </>
     );
@@ -178,20 +148,8 @@ try {
               guessing an offset. Floating UI recommends the same split for the same reason: the
               positioned node stays the library's, the styled node stays yours.
             */}
-            <div ref={follow.ref({ kind: 'label', id: selectedId })} style={followed}>
-              <div style={{
-                position: 'absolute',
-                left: 0,
-                bottom: 'calc(100% + 6px)',
-                display: 'flex',
-                gap: 4,
-                padding: 4,
-                background: '#fff',
-                border: '1px solid #d4d8e0',
-                borderRadius: 6,
-                boxShadow: '0 2px 8px rgb(16 20 28 / 12%)',
-              }}
-              >
+            <div ref={follow.ref({ kind: 'label', id: selectedId })} style={FOLLOWED}>
+              <div style={TOOLBAR}>
               {SWATCHES.map((colour) => (
                 <button
                   key={colour}
@@ -199,19 +157,7 @@ try {
                   aria-label={`Line colour ${colour}`}
                   data-swatch={colour}
                   onClick={() => style?.set('lineColor', colour)}
-                  style={{
-                    width: 18,
-                    height: 18,
-                    padding: 0,
-                    borderRadius: 4,
-                    background: colour,
-                    cursor: 'pointer',
-                    // `mixed` is a real state, not an absent one: with several selected and
-                    // disagreeing, no swatch is the current one.
-                    border: lineColor?.mixed === false && lineColor.value === colour
-                      ? '2px solid #111'
-                      : '1px solid #d4d8e0',
-                  }}
+                  style={swatchStyle(colour, lineColor)}
                 />
               ))}
               </div>
@@ -241,21 +187,7 @@ try {
     useEffect(() => {
       live = viewLeader;
       if (!viewLeader) return;
-      for (const note of NOTES) {
-        viewLeader.annotations.create({
-          id: `${note.key}-${generation}`,
-          anchor: {
-            kind: 'element',
-            modelId: 'building',
-            elementId: note.element.id,
-            // Where the leader points if the element is not in the model this session — a reload
-            // with a changed id lands here rather than dropping the note.
-            fallbackPoint: note.element.point,
-          },
-          content: { kind: 'callout', title: note.title, text: note.text },
-        });
-      }
-      viewLeader.annotations.select([`${NOTES[0].key}-${generation}`]);
+      seedNotes(viewLeader, generation);
       // The hook builds a NEW runtime for every mounted boundary, and insets live on the runtime,
       // so the claim has to be made again here or the fresh instance lays labels back under the
       // control dock.
@@ -314,8 +246,7 @@ try {
     });
     bar.status('React unmounted the prior instance and reconstructed on a fresh element.');
   });
-  bar.status('Click a label to select it. Drag its handles, double-click to retype, recolour from'
-    + ' the toolbar, nudge with the arrows. Every element here belongs to the page.');
+  bar.status(HINT);
 } catch (error) {
   markExampleFailed(error);
 }

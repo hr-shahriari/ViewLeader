@@ -11,8 +11,8 @@
 //   2. ANCHORS ARE IFC GlobalIds. `pick` below resolves the clicked mesh to its GlobalId and returns
 //      an ELEMENT anchor, not a world point — so a leader survives the model being hidden, reloaded
 //      or re-exported, and the saved document is meaningful outside this page.
-//   3. CHROME OWNS THREE EDGES. Two docked panels, handed to `setViewportInsets`, so no label is
-//      ever laid out underneath them.
+//   3. MODEL-AWARE ORGANIZATION. Two docked panels expose viewer controls. Strict model clearance
+//      wins when zoom leaves no room for labels beside the model; Fit model restores that room.
 //
 // The boundary is #viewport, not the harness overlay div: the overlay is `pointer-events: none`, so
 // listeners on it would only ever fire over an annotation. Same reasoning as `/leader-editor/`.
@@ -24,11 +24,8 @@ import {
   type AnnotationContent,
   type AnnotationDraft,
   type AnnotationRouting,
-  type CalloutContent,
-  type PlainNoteContent,
+  type ProjectedBoundsResult,
   type StyleOverride,
-  type SurfacePickResult,
-  type TagContent,
   type Vec2,
 } from 'viewleader';
 import {
@@ -46,8 +43,17 @@ import {
   markExampleReady,
 } from '../shared/harness';
 import { loadIfcModel, type IfcModel } from '../shared/ifcModel';
+import { mountOrganizationControls } from '../shared/organizationControls';
+import {
+  appendLeg,
+  bindEditingKeys,
+  createStatusLine,
+  createSurfacePicker,
+  createTextEditor,
+  createToolArmer,
+  mountAuthoringPreview,
+} from '../shared/leaderTools';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
 const MODEL_ID = 'duplex';
 // Built from the base rather than rooted at `/`: this is a runtime fetch, so no bundler rewrites it,
 // and the gallery is served from a subpath on GitHub Pages. `BASE_URL` already carries its trailing
@@ -58,6 +64,12 @@ const ROUTING_MODES = ['dogleg', 'straight', 'orthogonal'] as const;
 // fourth word to stay honest about a leg a dragged route grip bent by hand. Not a real mode: it is
 // offered only when it is already true.
 const MANUAL_ROUTING = 'manual';
+
+declare global {
+  interface Window {
+    ifcStudioOrganization?: { bounds(): ProjectedBoundsResult };
+  }
+}
 
 try {
   const viewport = document.querySelector<HTMLElement>('#viewport');
@@ -71,13 +83,7 @@ try {
   // here it answers with an IFC element rather than a coordinate — the whole reason this page loads
   // a real file. `pickSurface` adds the surface normal, which is what a region or ink stroke needs
   // to establish the plane it is stored in; an anchor carries no normal, so `pick` cannot stand in.
-  const raycaster = new THREE.Raycaster();
-  const normalMatrix = new THREE.Matrix3();
-  const castAt = (pointer: Vec2): THREE.Intersection | undefined => {
-    if (model === undefined) return undefined;
-    raycaster.setFromCamera(new THREE.Vector2(pointer.x * 2 - 1, 1 - pointer.y * 2), harness.camera);
-    return raycaster.intersectObject(model.root, true)[0];
-  };
+  const { castAt, pickSurface } = createSurfacePicker(harness.camera, () => model?.root);
 
   const pick = (pointer: Vec2): Anchor | null => {
     const hit = castAt(pointer);
@@ -89,21 +95,6 @@ try {
     return elementId === undefined
       ? { kind: 'world-point', point }
       : { kind: 'element', modelId: MODEL_ID, elementId, fallbackPoint: point };
-  };
-
-  const pickSurface = (pointer: Vec2): SurfacePickResult | null => {
-    const hit = castAt(pointer);
-    const face = hit?.face;
-    if (hit === undefined || face === undefined || face === null) return null;
-    // Face normals are object-local; the plane has to be world-space or the geometry drawn on it
-    // lands somewhere else entirely.
-    const normal = face.normal.clone()
-      .applyNormalMatrix(normalMatrix.getNormalMatrix(hit.object.matrixWorld))
-      .normalize();
-    return {
-      point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
-      normal: { x: normal.x, y: normal.y, z: normal.z },
-    };
   };
 
   // Element anchors are resolved through the host, and the host is this page. While `model` is
@@ -118,33 +109,38 @@ try {
     invalidations,
   );
 
+  const adapters = createThreeAdapter({
+    camera: harness.camera,
+    renderer: harness.renderer,
+    resolveElement,
+    elementInvalidations: invalidations,
+    modelBounds: () => model === undefined ? [] : [model.root],
+    // This example loads one immutable geometry tree. Visibility and camera changes do not
+    // change the full model bounds, so avoid traversing the IFC on every idle animation frame.
+    modelBoundsRevision: () => model === undefined ? 0 : 1,
+    // 0.25 m, in model units — Duplex is metric. An element anchor resolves to the CENTRE of the
+    // element's bounds, so the ray reaches that element's own near face before the point it is
+    // aiming at: half a 300 mm wall is 150 mm, half a 400 mm floor slab is 200 mm. On the
+    // adapter's 0.1 mm default every one of those reads as "occluded by the thing it points at"
+    // and the leaders draw permanently dashed. A real verdict here — an anchor on the far side of
+    // the building — misses by metres, so an allowance this wide has nothing left to swallow.
+    occlusion: { objects: () => model === undefined ? [] : [model.root], epsilon: 0.25 },
+    pick,
+    pickSurface,
+    // Core takes an interaction lease for the length of a gesture and this adapter disables
+    // OrbitControls while it is held, so an edit and an orbit can never run at once.
+    controls: harness.controls,
+  });
   const leader = new ViewLeader({
     boundary: viewport,
-    adapters: createThreeAdapter({
-      camera: harness.camera,
-      renderer: harness.renderer,
-      resolveElement,
-      elementInvalidations: invalidations,
-      modelBounds: () => model === undefined ? [] : [model.root],
-      // 0.25 m, in model units — Duplex is metric. An element anchor resolves to the CENTRE of the
-      // element's bounds, so the ray reaches that element's own near face before the point it is
-      // aiming at: half a 300 mm wall is 150 mm, half a 400 mm floor slab is 200 mm. On the
-      // adapter's 0.1 mm default every one of those reads as "occluded by the thing it points at"
-      // and the leaders draw permanently dashed. A real verdict here — an anchor on the far side of
-      // the building — misses by metres, so an allowance this wide has nothing left to swallow.
-      occlusion: { objects: () => model === undefined ? [] : [model.root], epsilon: 0.25 },
-      pick,
-      pickSurface,
-      // Core takes an interaction lease for the length of a gesture and this adapter disables
-      // OrbitControls while it is held, so an edit and an orbit can never run at once.
-      controls: harness.controls,
-    }),
+    adapters,
     // `marquee: 'modifier'` asks for the rubber band on a shift- or alt-drag only. A marquee on
     // every plain left-press would take the interaction lease, which the adapter turns into
     // `controls.enabled = false`, killing left-drag orbit on a page whose subject is direct
     // manipulation.
     editing: { gestures: true, marquee: 'modifier' },
   });
+  leader.setPlacementMode('quadrants');
 
   // --- Chrome ----------------------------------------------------------------------------------
   const panel = createSidePanel({ title: 'Inspector' });
@@ -183,25 +179,33 @@ try {
   insetObserver.observe(panel.element);
   window.addEventListener('resize', claimEdges);
 
-  // --- The status line -------------------------------------------------------------------------
-  // One writer. The live counts change on every document event and actions want to say what they
-  // just did; two writers on one line race, and after an async tool the counts always win.
-  let lastAction = 'Loading the IFC…';
-  const render = (): void => {
-    const { selectedIds, annotations } = leader.annotations.getSnapshot();
-    const { undoCount, redoCount } = leader.history.getSnapshot();
-    panel.status(`${lastAction} · ${annotations.length} leaders · ${selectedIds.length} selected · ${undoCount} undo / ${redoCount} redo`);
-  };
-  const say = (message: string): void => {
-    lastAction = message;
-    render();
-  };
+  // One writer for the status line: the live counts, keeping the last thing an action said.
+  const { render, say } = createStatusLine(leader, (text) => panel.status(text), 'Loading the IFC…');
   // `createSidePanel` reports a thrown button action through this event rather than the console —
   // the e2e suite fails a page on any console error, and a pick that missed the model is an
   // ordinary outcome, not a fault.
   panel.element.addEventListener('panel-error', (event) => {
     say((event as CustomEvent<string>).detail);
   });
+
+  const organization = panel.section('Organization');
+  const organizationControls = mountOrganizationControls(organization, leader, say);
+  organizationControls.disabled(true);
+  const viewButtons = [
+    organization.button('Fit model', () => {
+      fitModel();
+      say('Fit view: drag slowly, reverse, and release to inspect leader stability.');
+    }),
+    organization.button('Side view', () => {
+      fitModel(new THREE.Vector3(1, 0.35, 0));
+      say('Side view: leaders organize outside the full model, including its depth.');
+    }),
+    organization.button('Rear view', () => {
+      fitModel(new THREE.Vector3(-0.72, 0.52, -0.9));
+      say('Rear view: hidden leaders fade and dash; their labels stay readable.');
+    }),
+  ];
+  for (const button of viewButtons) button.disabled = true;
 
   const selectedIds = (): readonly string[] => leader.annotations.getSnapshot().selectedIds;
   const selectedId = (): string | undefined => selectedIds()[0];
@@ -231,51 +235,13 @@ try {
     leader.annotations.create(draft);
   }
 
-  // --- Arming a tool ---------------------------------------------------------------------------
-  // Every tool is one-shot: core resolves the same promise whether it completed, was cancelled with
-  // Escape, lost the pointer off the viewport, or failed. So the toolbar disarms in exactly one
-  // place and there is no mode variable to leak.
+  // Every tool is one-shot, and the armer disarms in exactly one place whatever the outcome.
   const createSection = panel.section('Create');
-  let armed: HTMLButtonElement | undefined;
-  const arm = (button: HTMLButtonElement | undefined): void => {
-    armed?.setAttribute('aria-pressed', 'false');
-    armed = button;
-    button?.setAttribute('aria-pressed', 'true');
-  };
-
-  type ToolOutcome =
-    | { readonly status: 'completed' }
-    | { readonly status: 'cancelled'; readonly reason: string }
-    | { readonly status: 'failed'; readonly error: { readonly message: string } };
-
-  const tool = (label: string, hint: string, run: () => Promise<ToolOutcome>): HTMLButtonElement => {
-    const button = createSection.button(label, async () => {
-      if (armed === button) {
-        // A second press on the armed tool is "never mind" — the same exit Escape takes.
-        leader.authoring.cancel();
-        leader.authoring.markup.cancel();
-        return;
-      }
-      arm(button);
-      say(hint);
-      const outcome = await run();
-      arm(undefined);
-      // Never console.error: a cancelled tool is an ordinary outcome. Core's own message is the
-      // useful one — "No model surface was found at that point" tells the user to aim at the
-      // building, where a bare "failed" would not.
-      say(
-        outcome.status === 'completed' ? `${label}: created. Ctrl/⌘+Z undoes it.`
-        : outcome.status === 'failed' ? `${label}: ${outcome.error.message}`
-        : `${label}: cancelled (${outcome.reason})`,
-      );
-    });
-    button.setAttribute('aria-pressed', 'false');
-    return button;
-  };
+  const tool = createToolArmer(leader, say, (label, action) => createSection.button(label, action));
 
   // Ids come off a monotonic counter, never off `annotations.length` and never off `Date.now()`.
   // Length rewinds when you delete something, so the next create collides and `annotations.create`
-  // throws `DuplicateIdError`. A clock is worse: two markups committed in the same millisecond
+  // throws `DUPLICATE_ID`. A clock is worse: two markups committed in the same millisecond
   // collide, and the document stops being reproducible.
   let nextId = 0;
   const freshId = (prefix: string): string => `${prefix}-${(nextId += 1)}`;
@@ -327,23 +293,8 @@ try {
     });
   });
 
-  // --- The live multi-point route ----------------------------------------------------------------
-  // Core publishes `preview.vertices` and `preview.livePoint` already in screen pixels, but renders
-  // no authoring preview of its own — a host that wants to see the leader it is drawing draws it.
-  const previewSvg = document.createElementNS(SVG_NS, 'svg');
-  previewSvg.setAttribute('class', 'vl-authoring-preview');
-  const previewLine = document.createElementNS(SVG_NS, 'polyline');
-  previewLine.setAttribute('fill', 'none');
-  previewLine.setAttribute('stroke', '#4b6ef5');
-  previewLine.setAttribute('stroke-width', '1.5');
-  previewLine.setAttribute('stroke-dasharray', '5 4');
-  previewSvg.append(previewLine);
-  viewport.append(previewSvg);
-  leader.authoring.subscribe(() => {
-    const { preview } = leader.authoring.getSnapshot();
-    const points = [...(preview?.vertices ?? []), ...(preview?.livePoint ? [preview.livePoint] : [])];
-    previewLine.setAttribute('points', points.map(({ x, y }) => `${x},${y}`).join(' '));
-  });
+  // The live multi-point route: core publishes the preview points, the host draws them.
+  mountAuthoringPreview(leader, viewport);
 
   // --- Leader section ----------------------------------------------------------------------------
   const leaderSection = panel.section('Leader');
@@ -385,24 +336,12 @@ try {
     say(`${id} · ${legSelect.element.value} routed ${mode}`);
   });
 
-  // A new leg lands on the anchor the last one used; the user then drags its arrowhead grip onto
-  // whatever it should point at, which core does for free with `gestures: true` + `pick`.
   const addLeg = leaderSection.button('Add leg', () => {
     const id = selectedId();
-    const last = id === undefined ? undefined : leader.annotations.get(id)?.anchors.at(-1);
-    if (id === undefined || last === undefined) return;
-    // Same rewind trap as the note ids, one scope down: remove `leg-1` and the next add would
-    // re-mint `leg-2`, which `document.ts` rejects as a duplicate leg id.
-    const taken = new Set(leader.annotations.get(id)?.anchors.map((leg) => leg.id) ?? []);
-    let ordinal = taken.size + 1;
-    while (taken.has(`leg-${ordinal}`)) ordinal += 1;
-    leader.authoring.markup.addAnchor(id, {
-      id: `leg-${ordinal}`,
-      anchor: last.anchor,
-      routing: { kind: 'automatic', mode: 'dogleg' },
-    });
+    const count = id === undefined ? undefined : appendLeg(leader, id);
+    if (count === undefined) return;
     syncPanel();
-    say(`${id} now has ${taken.size + 1} legs — drag the new arrowhead onto something`);
+    say(`${id} now has ${count} legs — drag the new arrowhead onto something`);
   });
 
   // No "a leader needs at least one leg" message: the button is disabled while the selection has one.
@@ -595,79 +534,8 @@ try {
     deleteSelection.disabled = ids.length === 0;
   }
 
-  // --- Inline text field --------------------------------------------------------------------------
-  // The minimum that works. `/host-chrome/` has the thorough version: IME, blur-reentrancy, per-style
-  // padding and alignment copied off the definition. This one only needs a box, a font and Enter.
-  type TextContent = PlainNoteContent | TagContent | CalloutContent;
-  const asTextContent = (content: AnnotationContent): TextContent | undefined =>
-    content.kind === 'plain-note' || content.kind === 'tag' || content.kind === 'callout'
-      ? content
-      : undefined;
-
-  let editor: { readonly id: string; readonly field: HTMLTextAreaElement } | undefined;
-  const closeEditor = (): void => {
-    const open = editor;
-    editor = undefined;
-    open?.field.remove();
-  };
-
-  /** Re-run every frame: the label moves with the camera, so the field moves with the label. */
-  const placeEditor = (): void => {
-    if (editor === undefined) return;
-    const geometry = leader.geometry.of(editor.id);
-    if (geometry === undefined) {
-      editor.field.style.visibility = 'hidden';
-      return;
-    }
-    const { field } = editor;
-    field.style.visibility = 'visible';
-    field.style.left = `${geometry.label.x}px`;
-    field.style.top = `${geometry.label.y}px`;
-    field.style.width = `${geometry.label.width}px`;
-    field.style.height = `${geometry.label.height}px`;
-    field.style.fontFamily = geometry.text.fontFamily;
-    field.style.fontSize = `${geometry.text.fontSize}px`;
-    field.style.lineHeight = `${geometry.text.lineHeight}px`;
-  };
-
-  const commitEditor = (): void => {
-    if (editor === undefined) return;
-    const { id, field } = editor;
-    const value = field.value;
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    const text = content === undefined ? undefined : asTextContent(content);
-    if (text === undefined || text.text === value) return;
-    leader.annotations.update(id, { content: { ...text, text: value } });
-    say(`${id} text committed — one undo step`);
-  };
-
-  const openEditor = (id: string): void => {
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    if (content === undefined || asTextContent(content) === undefined) {
-      say('That content kind carries no plain text');
-      return;
-    }
-    const field = document.createElement('textarea');
-    field.className = 'host-text-field';
-    field.value = asTextContent(content)!.text;
-    field.setAttribute('aria-label', `Text of ${id}`);
-    field.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeEditor();
-      // Enter commits, Shift+Enter is a newline — which is why this is a textarea.
-      else if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        commitEditor();
-      }
-    });
-    field.addEventListener('blur', () => commitEditor());
-    viewport.append(field);
-    editor = { id, field };
-    placeEditor();
-    field.focus();
-    field.select();
-  };
+  // The inline text field, sitting on the rect `geometry.of` publishes.
+  const textEditor = createTextEditor(leader, viewport, say);
 
   // The right button pans, and `contextmenu` fires on mouse-DOWN on macOS and mouse-UP elsewhere —
   // so without this a pan pops the browser menu either the instant it starts or the instant it ends.
@@ -679,43 +547,11 @@ try {
     // to finish the route, and its listener is added after this one.
     if (leader.authoring.getSnapshot().phase !== 'idle') return;
     const hit = leader.editing.hitTestScreen(localPoint(event));
-    if (hit?.kind === 'label') openEditor(hit.id);
+    if (hit?.kind === 'label') textEditor.open(hit.id);
   });
 
-  // Core binds Escape while it holds a gesture, and nothing else. Undo, redo and Delete are the
-  // host's to name; this page uses the bindings every drawing tool uses.
-  window.addEventListener('keydown', (event) => {
-    if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
-    const modifier = event.metaKey || event.ctrlKey;
-
-    if (modifier && event.key.toLowerCase() === 'z') {
-      event.preventDefault();
-      const moved = event.shiftKey ? leader.history.redo() : leader.history.undo();
-      syncPanel();
-      say(moved ? (event.shiftKey ? 'Redone' : 'Undone') : `Nothing to ${event.shiftKey ? 'redo' : 'undo'}`);
-      return;
-    }
-    if (modifier && event.key.toLowerCase() === 'a') {
-      event.preventDefault();
-      // Selection is runtime state, so select-all costs no history entry.
-      leader.annotations.select(leader.annotations.getSnapshot().annotations.map(({ id }) => id));
-      say('Selected all');
-      return;
-    }
-    if (event.key === 'Escape') {
-      closeEditor();
-      leader.annotations.clearSelection();
-      return;
-    }
-    if (selectedIds().length > 0 && (event.key === 'Delete' || event.key === 'Backspace')) {
-      event.preventDefault();
-      const ids = selectedIds();
-      leader.history.transaction('Delete annotations', () => {
-        for (const id of ids) leader.annotations.remove(id);
-      });
-      say(`Deleted ${ids.length} — one undo step`);
-    }
-  });
+  // Undo, redo, select-all, Escape and Delete — the bindings every drawing tool uses.
+  bindEditingKeys(leader, { say, onEscape: textEditor.close, afterHistory: syncPanel });
 
   leader.annotations.subscribe(() => {
     syncPanel();
@@ -728,30 +564,88 @@ try {
 
   harness.onFrame(() => {
     leader.update();
-    placeEditor();
+    textEditor.place();
   });
   leader.update();
 
   exposeExampleManager(leader);
+  window.ifcStudioOrganization = {
+    bounds: () => {
+      const bounds = adapters.modelBounds?.get() ?? null;
+      return bounds === null ? { status: 'empty' }
+        : adapters.projection.projectBounds!(bounds, adapters.projection.getViewport());
+    },
+  };
   // Ready before the parse, deliberately. Two notes are already on screen and the overlay is live;
   // waiting on a multi-megabyte IFC would make readiness mean "the host finished loading", which is
   // not what this attribute is for and would put a several-second parse inside every e2e timeout.
   requestAnimationFrame(() => markExampleReady());
 
   // --- The model ---------------------------------------------------------------------------------
-  const frame = (box: THREE.Box3): void => {
+  const frame = (box: THREE.Box3, direction = new THREE.Vector3(0.72, 0.52, 0.9)): void => {
     if (box.isEmpty()) return;
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1);
     const distance = radius / Math.sin((harness.camera.fov * Math.PI) / 360);
     harness.camera.position.copy(centre).add(
-      new THREE.Vector3(0.72, 0.52, 0.9).normalize().multiplyScalar(distance),
+      direction.clone().normalize().multiplyScalar(distance),
     );
     harness.camera.near = Math.max(distance / 1000, 0.01);
     harness.camera.far = distance * 10;
     harness.camera.updateProjectionMatrix();
     harness.controls.target.copy(centre);
     harness.controls.update();
+  };
+
+  const fitModel = (direction?: THREE.Vector3): void => {
+    if (model === undefined) return;
+    const world = new THREE.Box3().setFromObject(model.root);
+    frame(world, direction);
+    const viewportRect = viewport.getBoundingClientRect();
+    const available = {
+      left: tree.getBoundingClientRect().right - viewportRect.left + BREATHING_ROOM,
+      right: panel.element.getBoundingClientRect().left - viewportRect.left - BREATHING_ROOM,
+      top: BREATHING_ROOM,
+      bottom: viewportRect.height - BREATHING_ROOM,
+    };
+    // Fit the rendered footprint, since text keeps its pixel size as the model shrinks. A sphere
+    // fit alone can put every outside label behind the inspector. Only explicit view presets move
+    // the camera this way; ordinary zoom/orbit still permits labels to leave the screen.
+    // The pass is bounded for narrow windows or authored obstacles that cannot fit at any zoom.
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      leader.update();
+      const projected = adapters.projection.projectBounds!(world, adapters.projection.getViewport());
+      if (projected.status !== 'available') break;
+      const labels = leader.annotations.getSnapshot().annotations.flatMap((annotation) => {
+        if (annotation.placement.kind !== 'automatic' || annotation.locked) return [];
+        const geometry = leader.geometry.of(annotation.id);
+        return geometry === undefined ? [] : [geometry.label];
+      });
+      const minX = Math.min(projected.bounds.min.x, ...labels.map((label) => label.x));
+      const maxX = Math.max(projected.bounds.max.x, ...labels.map((label) => label.x + label.width));
+      const minY = Math.min(projected.bounds.min.y, ...labels.map((label) => label.y));
+      const maxY = Math.max(projected.bounds.max.y, ...labels.map((label) => label.y + label.height));
+      const ratio = Math.max((maxX - minX) / Math.max(1, available.right - available.left),
+        (maxY - minY) / Math.max(1, available.bottom - available.top));
+      if (ratio > 1) {
+        // A small margin prevents the next layout's text spacing from landing on the panel edge.
+        harness.camera.position.sub(harness.controls.target).multiplyScalar(ratio * 1.05).add(harness.controls.target);
+        harness.camera.far = Math.max(harness.camera.far, harness.camera.position.distanceTo(harness.controls.target) * 10);
+        harness.camera.updateProjectionMatrix();
+      } else {
+        const dx = (minX + maxX - available.left - available.right) / 2;
+        const dy = (minY + maxY - available.top - available.bottom) / 2;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break;
+        const unitsPerPixel = 2 * harness.camera.position.distanceTo(harness.controls.target)
+          * Math.tan(THREE.MathUtils.degToRad(harness.camera.fov / 2)) / viewportRect.height;
+        const offset = new THREE.Vector3().setFromMatrixColumn(harness.camera.matrixWorld, 0).multiplyScalar(dx * unitsPerPixel)
+          .addScaledVector(new THREE.Vector3().setFromMatrixColumn(harness.camera.matrixWorld, 1), -dy * unitsPerPixel);
+        harness.camera.position.add(offset);
+        harness.controls.target.add(offset);
+      }
+      harness.controls.update();
+    }
+    leader.update();
   };
 
   const NAME_LIMIT = 30;
@@ -879,7 +773,14 @@ try {
         }
       });
 
-      leader.update();
+      // Strict placement needs current model bounds. Keep the introductory notes visible while
+      // the worker loads, then enable the outside policy together with its inspector controls.
+      leader.setKeepLabelsOutsideModel(true);
+      organizationControls.keepOutside.checked = true;
+      organizationControls.disabled(false);
+      for (const button of viewButtons) button.disabled = false;
+      fitModel();
+      document.body.dataset['ifcLoaded'] = '1';
       say(`Duplex loaded — ${loaded.groups.length} IFC classes. Pick a tool, then click an element.`);
     })
     .catch((error: unknown) => {
@@ -887,6 +788,7 @@ try {
       // against an empty scene. Say what happened in the panel, never on the console — the e2e suite
       // fails a page on a console error, and a missing fixture is a host problem, not a core one.
       treeEmpty.textContent = 'The model could not be loaded.';
+      document.body.dataset['ifcLoaded'] = 'error';
       say(`IFC load failed: ${error instanceof Error ? error.message : String(error)}`);
     });
 } catch (error) {

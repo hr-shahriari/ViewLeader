@@ -236,7 +236,7 @@ describe('route grips: dragging a vertex', () => {
     expect(leader.geometry.of('a1')!.legs[0]).not.toEqual(drawnBefore);
     expect(vertices(leader, 'a1')).toEqual([{ x: 450, y: 340 }]);
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
     expect(leader.geometry.of('a1')!.legs[0]).toEqual(drawnBefore);
     leader.dispose();

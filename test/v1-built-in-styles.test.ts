@@ -9,8 +9,6 @@
  *
  *   'renders a grid bubble …'   expects `d` to contain 'C'. The circle is now two arcs, `A`, drawn
  *                               by the symbol itself instead of by the style's bezier enclosure.
- *                               `extent()` also mis-measures an arc path, since it reads every
- *                               number as a coordinate and an arc carries radii and flags.
  *   'renders a hexagon …'       counts `L` commands and finds none. The symbol path is
  *                               `M 9 0 H 27 L 36 18 L 27 36 H 9 L 0 18 Z` — six sides, but two of
  *                               them spelled `H`, and `outline()` may no longer be selecting it.
@@ -95,14 +93,6 @@ function outline(group: Element): SVGPathElement {
   return group.querySelector('[data-hit-target="label"] path')!;
 }
 
-/** Axis-aligned extent of a path's coordinates — the box the shape occupies. */
-function extent(path: SVGPathElement): Readonly<{ width: number; height: number }> {
-  const values = numbers(path.getAttribute('d'));
-  const xs = values.filter((_, index) => index % 2 === 0);
-  const ys = values.filter((_, index) => index % 2 === 1);
-  return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
-}
-
 describe('the eleven built-in styles', () => {
   it('renders a grid bubble: circle, bold centred letter, dot on a vertical drop', () => {
     const group = render(draft('grid', 'builtin.style.grid-bubble', {
@@ -113,8 +103,7 @@ describe('the eleven built-in styles', () => {
     // RECONSTRUCTED — see the header. A circle, drawn as two arcs by the symbolic block itself.
     // It used to be a bezier because the style's enclosure replaced the symbol's shape; `content.ts`
     // now tags that shape `role: 'symbol'` so a style cannot turn a requested circle into its own
-    // outline. Roundness is asserted from the arc's radii, because `extent()` reads every number in
-    // a path as a coordinate and an arc carries radii and flags as well.
+    // outline. Roundness is asserted from the arc's radii.
     const path = shape.getAttribute('d') ?? '';
     expect(path).toContain('A');
     const [radiusX, radiusY] = path.split('A')[1]!.trim().split(/\s+/u).map(Number);

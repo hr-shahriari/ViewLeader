@@ -13,6 +13,7 @@ import {
   type PluginDescriptor,
   type PluginToolTransition,
 } from '../index.js';
+import { isJsonObject } from '../internal/json.js';
 
 type TextPrimitive = Extract<DeclarativePrimitive, { readonly kind: 'text' }>;
 
@@ -79,19 +80,12 @@ export interface MarkdownAst {
   readonly blocks: readonly MarkdownBlock[];
 }
 
-export interface MarkdownPluginLimits {
-  readonly maximumCharacters: number;
-  readonly maximumBlocks: number;
-  readonly maximumRuns: number;
-  readonly maximumListDepth: number;
-}
-
-export const DEFAULT_MARKDOWN_PLUGIN_LIMITS: MarkdownPluginLimits = Object.freeze({
-  maximumCharacters: 20_000,
-  maximumBlocks: 256,
-  maximumRuns: 2_048,
-  maximumListDepth: 4,
-});
+/** A note, not a document. Past these a Markdown annotation has stopped being readable at drawing
+ *  scale, and a runaway one would cost every frame its layout. */
+const MAXIMUM_CHARACTERS = 20_000;
+const MAXIMUM_BLOCKS = 256;
+const MAXIMUM_RUNS = 2_048;
+const MAXIMUM_LIST_DEPTH = 4;
 
 /**
  * The Markdown this plugin will not draw. Used both when authoring, where it is an error, and when
@@ -114,12 +108,9 @@ const UNSUPPORTED_MARKDOWN_SYNTAX: readonly Readonly<{
  * Anything outside it is rejected outright rather than quietly removed — silently dropping a link
  * the author typed would lose their work without telling them.
  */
-export function parseMarkdownPluginContent(
-  source: string,
-  limits: MarkdownPluginLimits = DEFAULT_MARKDOWN_PLUGIN_LIMITS,
-): MarkdownAst {
-  validateMarkdownSource(source, limits);
-  return { blocks: parseMarkdownBlocks(source, limits, false) };
+export function parseMarkdownPluginContent(source: string): MarkdownAst {
+  validateMarkdownSource(source);
+  return { blocks: parseMarkdownBlocks(source, false) };
 }
 
 /**
@@ -132,19 +123,12 @@ export function parseMarkdownPluginContent(
  * The original text is left untouched, so a later version that does understand the construct can
  * still draw it properly.
  */
-export function parseMarkdownPluginContentLoose(
-  source: string,
-  limits: MarkdownPluginLimits = DEFAULT_MARKDOWN_PLUGIN_LIMITS,
-): MarkdownAst {
-  assertMarkdownCharacterBound(source, limits);
-  return { blocks: parseMarkdownBlocks(source, limits, true) };
+export function parseMarkdownPluginContentLoose(source: string): MarkdownAst {
+  assertMarkdownCharacterBound(source);
+  return { blocks: parseMarkdownBlocks(source, true) };
 }
 
-function parseMarkdownBlocks(
-  source: string,
-  limits: MarkdownPluginLimits,
-  lenient: boolean,
-): MarkdownBlock[] {
+function parseMarkdownBlocks(source: string, lenient: boolean): MarkdownBlock[] {
   const normalized = source.replace(/\r\n?/gu, '\n');
   const lines = normalized.split('\n');
   const blocks: MarkdownBlock[] = [];
@@ -160,11 +144,11 @@ function parseMarkdownBlocks(
       runCount += 1;
       index += 1;
     } else {
-      const firstList = parseListLine(line, limits);
+      const firstList = parseListLine(line);
       if (firstList !== undefined) {
         const items: MarkdownListItem[] = [];
         while (index < lines.length) {
-          const item = parseListLine(lines[index]!, limits);
+          const item = parseListLine(lines[index]!);
           if (item === undefined) break;
           const runs = parseInline(item.text);
           runCount += runs.length;
@@ -182,7 +166,7 @@ function parseMarkdownBlocks(
         while (
           index < lines.length
           && lines[index]!.trim().length > 0
-          && parseListLine(lines[index]!, limits) === undefined
+          && parseListLine(lines[index]!) === undefined
           && !(lenient
             && UNSUPPORTED_MARKDOWN_SYNTAX.some(({ pattern }) => pattern.test(lines[index]!)))
         ) {
@@ -201,10 +185,7 @@ function parseMarkdownBlocks(
         blocks.push({ kind: 'paragraph', runs });
       }
     }
-    if (
-      blocks.length > limits.maximumBlocks
-      || runCount > limits.maximumRuns
-    ) {
+    if (blocks.length > MAXIMUM_BLOCKS || runCount > MAXIMUM_RUNS) {
       throw markdownError('Markdown content exceeds block or run bounds', {
         blockCount: blocks.length,
         runCount,
@@ -214,22 +195,16 @@ function parseMarkdownBlocks(
   return blocks;
 }
 
-function assertMarkdownCharacterBound(
-  source: string,
-  limits: MarkdownPluginLimits,
-): void {
-  if (typeof source !== 'string' || source.length > limits.maximumCharacters) {
+function assertMarkdownCharacterBound(source: string): void {
+  if (typeof source !== 'string' || source.length > MAXIMUM_CHARACTERS) {
     throw markdownError('Markdown source exceeds the character bound', {
-      maximumCharacters: limits.maximumCharacters,
+      maximumCharacters: MAXIMUM_CHARACTERS,
     });
   }
 }
 
-export function validateMarkdownSource(
-  source: string,
-  limits: MarkdownPluginLimits = DEFAULT_MARKDOWN_PLUGIN_LIMITS,
-): void {
-  assertMarkdownCharacterBound(source, limits);
+function validateMarkdownSource(source: string): void {
+  assertMarkdownCharacterBound(source);
   const normalized = source.replace(/\r\n?/gu, '\n');
   const matched = UNSUPPORTED_MARKDOWN_SYNTAX.filter(({ pattern }) => pattern.test(normalized));
   if (matched.length > 0) {
@@ -553,10 +528,7 @@ function parseInline(source: string): readonly MarkdownInlineRun[] {
   return runs;
 }
 
-function parseListLine(
-  line: string,
-  limits: MarkdownPluginLimits,
-): Readonly<{
+function parseListLine(line: string): Readonly<{
   depth: number;
   marker: 'ordered' | 'unordered';
   ordinal?: number;
@@ -566,10 +538,10 @@ function parseListLine(
   if (match === null) return undefined;
   const indentation = match[1]!.replace(/\t/gu, '  ').length;
   const depth = Math.floor(indentation / 2);
-  if (depth > limits.maximumListDepth) {
+  if (depth > MAXIMUM_LIST_DEPTH) {
     throw markdownError('Markdown list nesting exceeds its bound', {
       depth,
-      maximumListDepth: limits.maximumListDepth,
+      maximumListDepth: MAXIMUM_LIST_DEPTH,
     });
   }
   const ordinal = match[3] === undefined ? undefined : Number(match[3]);
@@ -640,13 +612,6 @@ function readToolSource(state: JsonValue): string {
     throw markdownError('Markdown tool state is invalid');
   }
   return state.source;
-}
-
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-  return value !== undefined
-    && value !== null
-    && typeof value === 'object'
-    && !Array.isArray(value);
 }
 
 function markdownError(

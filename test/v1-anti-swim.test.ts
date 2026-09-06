@@ -7,6 +7,7 @@
  * is a slow deliberate drag, the camera motion where swimming is most visible and least excusable.
  */
 import { describe, expect, it } from 'vitest';
+import { LabelPlacer, SECTOR_HYSTERESIS } from '../src/labelPlacer.js';
 import { SCALE, VIEWPORT, scene } from './crowded-scene-harness.js';
 
 /** One degree per step. Coarser steps hide swim by making every real motion look like a jump. */
@@ -22,12 +23,6 @@ const ORBIT_STEPS = 360;
  * height, so a reader tracking one note never sees it leave the place they last looked.
  */
 export const CREEP_BUDGET_PX = 8;
-
-/**
- * The dead-band a label's anchor must cross before its side is allowed to change, in screen pixels.
- * Mirrors `SECTOR_HYSTERESIS` in `labelPlacer.ts`, which is the number being graded.
- */
-const DEAD_BAND_PX = 24;
 
 const MODEL = { min: { x: -3.3, y: 0, z: -3.3 }, max: { x: 3.3, y: 5.2, z: 3.3 } };
 
@@ -83,7 +78,7 @@ function orbit(): { creeps: number[]; flipsTotal: number; flipsInDeadBand: numbe
       // A side change is legitimate once the anchor is genuinely past the centre line — over a full
       // orbit every anchor crosses twice, so demanding zero flips would demand a broken drawing.
       flipsTotal += 1;
-      if (Math.abs(current.anchor.x - centreX) < DEAD_BAND_PX) flipsInDeadBand += 1;
+      if (Math.abs(current.anchor.x - centreX) < SECTOR_HYSTERESIS) flipsInDeadBand += 1;
     }
     previous = now;
   }
@@ -110,26 +105,19 @@ describe('anti-swim over a 360° orbit of scene A', () => {
     expect(percentile(0.9)).toBeLessThanOrEqual(CREEP_BUDGET_PX);
   });
 
-  /**
-   * **The tail is over budget and this records it rather than hiding it.**
-   *
-   * Measured: p99 is about 121 px and the worst single frame about 256 px, in labels that never
-   * changed column. The cause is not drift and not the slot ordering — it is membership of the
-   * primary/overflow split in `placeQuadrant`. Overflow labels stack AWAY from the frame (above
-   * `boundary.min.y` for the top quadrants) while primary labels sit beside it, so a label crossing
-   * that boundary teleports the whole distance between the two regions in one frame. The jumps have
-   * exactly that signature: y 115 → 378 with x unchanged, at a camera step of one degree.
-   *
-   * The split is decided by an X-sorted budget walk with no hysteresis of any kind, and X order
-   * churns continuously during an orbit. Fixing it needs membership memory, the same way
-   * `stickySector` needed sector memory. Tracked as a bounded number until then: it may fall, never
-   * rise.
-   */
-  it('records the tail, which is primary/overflow churn and is not yet within budget', () => {
-    const sorted = [...result.creeps].sort((left, right) => left - right);
-    const p99 = sorted[Math.floor(sorted.length * 0.99)]!;
-    expect(p99).toBeGreaterThan(CREEP_BUDGET_PX); // if this ever fails, the tail was fixed — raise the bar
-    expect(p99).toBeLessThanOrEqual(130);
-    expect(sorted[sorted.length - 1]!).toBeLessThanOrEqual(260);
+  it('does not turn a near-tie depth reorder into a primary/overflow jump', () => {
+    const placer = new LabelPlacer();
+    const frame = { min: { x: 300, y: 200 }, max: { x: 500, y: 400 } };
+    const dims = new Map(['a', 'b', 'c'].map((id) => [id, { width: 96, height: 70 }]));
+    const place = (xs: readonly number[]) => placer.computePlacements(
+      ['a', 'b', 'c'].map((id, index) => ({ id, screenPos: { x: xs[index]!, y: 220 + index * 4 } })),
+      frame,
+      { x: 800, y: 600 },
+      dims,
+      undefined,
+      'auto',
+    ).map(({ annotationId, position, overflow }) => ({ annotationId, position, overflow }));
+    const before = place([310, 310.01, 310.02]);
+    expect(place([310.03, 310.01, 310])).toEqual(before);
   });
 });

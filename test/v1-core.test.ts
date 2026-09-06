@@ -1,7 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  DisposedError,
   InvalidDocumentError,
   ViewLeader,
   type Anchor,
@@ -107,12 +106,38 @@ describe('fresh v1 core vertical slice', () => {
     expect(leader.annotations.remove('note-a')).toEqual(updated);
     expect(leader.annotations.getSnapshot().annotations).toEqual([]);
 
+    // A method handed out before disposal — to `useSyncExternalStore`, say — keeps one identity
+    // and still refuses afterwards; a detached class method still reaches its own instance.
+    const { getSnapshot } = leader.annotations;
+    const { list } = leader.definitions;
+    const { getSnapshot: viewsSnapshot } = leader.views;
+    const { getSnapshot: markupSnapshot, subscribe: markupSubscribe } = leader.authoring.markup;
+    const { getSnapshot: pluginSnapshot, subscribe: pluginSubscribe } = leader.authoring.plugins;
+    expect(leader.annotations.getSnapshot).toBe(getSnapshot);
+    expect(leader.authoring.markup.getSnapshot).toBe(markupSnapshot);
+    expect(leader.authoring.markup.subscribe).toBe(markupSubscribe);
+    expect(leader.authoring.plugins.getSnapshot).toBe(pluginSnapshot);
+    expect(leader.authoring.plugins.subscribe).toBe(pluginSubscribe);
+    expect(list().length).toBeGreaterThan(0);
+    expect(viewsSnapshot().savedViews).toEqual([]);
+    expect(markupSnapshot().phase).toBe('idle');
+    expect(pluginSnapshot().phase).toBe('idle');
+    markupSubscribe(() => undefined)();
+    pluginSubscribe(() => undefined)();
     leader.dispose();
     leader.dispose();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
-    expect(() => leader.update()).toThrow(DisposedError);
-    expect(() => leader.annotations.getSnapshot()).toThrow(DisposedError);
+    expect(() => leader.update()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => leader.annotations.getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => getSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => list()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => viewsSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => markupSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => pluginSnapshot()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => markupSubscribe(() => undefined)).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => pluginSubscribe(() => undefined)).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
+    expect(() => leader.authoring.markup.dispose()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
   });
 
   it('serializes deterministically and rejects replacement without observable mutation', () => {
@@ -264,9 +289,19 @@ describe('fresh v1 core vertical slice', () => {
       },
     });
     const disconnect = vi.fn();
+    let overlayWasAttachedDuringPluginCleanup = false;
 
     expect(() => new ViewLeader({
       boundary: root,
+      plugins: [{
+        id: 'fixture.cleanup-order',
+        coreApiRange: '^1.0.0',
+        schemaVersion: 1,
+        validate: () => undefined,
+        setup: ({ registerCleanup }) => registerCleanup(() => {
+          overlayWasAttachedDuringPluginCleanup = root.querySelector('[data-viewleader-overlay]') !== null;
+        }),
+      }],
       adapters: adapters({
         projection: {
           ...adapters().projection,
@@ -275,6 +310,7 @@ describe('fresh v1 core vertical slice', () => {
       }),
     })).toThrow('status append failed');
 
+    expect(overlayWasAttachedDuringPluginCleanup).toBe(true);
     expect(disconnect).toHaveBeenCalledOnce();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
@@ -421,7 +457,7 @@ describe('fresh v1 core vertical slice', () => {
     expect(disconnect).toHaveBeenCalledOnce();
     expect(root.querySelector('[data-viewleader-overlay]')).toBeNull();
     expect(root.querySelector('[data-viewleader-status]')).toBeNull();
-    expect(() => leader.update()).toThrow(DisposedError);
+    expect(() => leader.update()).toThrow(expect.objectContaining({ code: 'DISPOSED' }));
     expect(() => leader.dispose()).not.toThrow();
   });
 

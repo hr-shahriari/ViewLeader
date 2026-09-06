@@ -7,8 +7,6 @@ import {
   type InkAnnotation,
 } from '../src/index.js';
 import { definitionFromJson, validateDefinition, type TypedDefinition } from '../src/definitions.js';
-import { normalizeSavedViewDefinition } from '../src/saved-views/neutral-validation.js';
-import type { SavedViewDefinition } from '../src/saved-views/neutral-types.js';
 
 function leader(): ViewLeader {
   const boundary = document.createElement('div');
@@ -345,21 +343,5 @@ describe('strict to author is unchanged', () => {
       .toThrow(/contains unsupported fields/u);
     // The same value, down the load path instead.
     expect(() => definitionFromJson(futureStyle() as never)).not.toThrow();
-  });
-
-  it('refuses an unknown field on a saved view the author inserts, but not on one it loads', () => {
-    expect(() => normalizeSavedViewDefinition(futureSavedView() as unknown as SavedViewDefinition))
-      .toThrow(/contains unsupported fields/u);
-    const unrecognized: string[] = [];
-    expect(() => normalizeSavedViewDefinition(
-      futureSavedView() as unknown as SavedViewDefinition,
-      unrecognized,
-    )).not.toThrow();
-    expect(unrecognized.sort()).toEqual([
-      'camera.rollDegrees',
-      'clipping plane.feather',
-      'saved view.thumbnail',
-      'viewer state.ambientOcclusion',
-    ]);
   });
 });

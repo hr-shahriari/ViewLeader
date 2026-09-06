@@ -1,11 +1,10 @@
 // A .bcfzip is a ZIP file, so reading and writing one means reading and writing ZIP entries.
 //
-// Only what the format actually needs is implemented. Decompression is handed to the host rather
-// than implemented here, because the platform already has it and a second copy is dead weight.
+// Only what the format actually needs is implemented. Deflate is the platform's
+// `DecompressionStream`, because it already has one and a second copy is dead weight.
 import {
   DEFAULT_ARCHIVE_LIMITS,
   type ArchiveEntry,
-  type ArchiveInflater,
   type ArchiveLimits,
   type ArchiveReadResult,
 } from './types.js';
@@ -25,7 +24,7 @@ for (let index = 0; index < 256; index += 1) {
   crcTable[index] = value >>> 0;
 }
 
-export function crc32(data: Uint8Array): number {
+function crc32(data: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of data) crc = (crc >>> 8) ^ (crcTable[(crc ^ byte) & 0xff] ?? 0);
   return (crc ^ 0xffffffff) >>> 0;
@@ -163,13 +162,32 @@ interface CentralEntry {
 }
 
 /**
- * Reads a ZIP file. Uncompressed entries are handled directly; compressed ones are passed to a
- * decompressor the host supplies, since every platform already has one.
+ * Inflates one deflate entry, stopping as soon as the output passes `maximumBytes`. The directory
+ * record's size was already checked against the limits, so this only ever fires for an entry that
+ * lied about it — which is exactly the entry that must not be allowed to keep going.
  */
+async function inflateRaw(compressed: Uint8Array<ArrayBuffer>, maximumBytes: number): Promise<Uint8Array> {
+  const reader = new Blob([compressed]).stream()
+    .pipeThrough(new DecompressionStream('deflate-raw'))
+    .getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return concat(chunks);
+    size += value.length;
+    if (size > maximumBytes) {
+      await reader.cancel();
+      throw new Error('Archive entry inflates past the per-entry limit');
+    }
+    chunks.push(value);
+  }
+}
+
+/** Reads a ZIP file: stored entries as they are, deflate entries through the platform. */
 export async function readArchive(
   input: Uint8Array,
   configuredLimits?: Partial<ArchiveLimits>,
-  inflateRaw?: ArchiveInflater,
 ): Promise<ArchiveReadResult> {
   const errors: string[] = [];
   const entries: ArchiveEntry[] = [];
@@ -242,13 +260,8 @@ export async function readArchive(
       const compressed = input.slice(start, end);
       let data: Uint8Array;
       if (entry.compression === 0) data = compressed;
-      else if (entry.compression === 8) {
-        if (!inflateRaw) {
-          errors.push(`Archive entry ${entry.name} requires a deflate decompressor`);
-          continue;
-        }
-        data = await inflateRaw(compressed, entry.uncompressedSize, limits.maximumEntryBytes);
-      } else {
+      else if (entry.compression === 8) data = await inflateRaw(compressed, limits.maximumEntryBytes);
+      else {
         errors.push(`Archive entry ${entry.name} uses unsupported compression ${entry.compression}`);
         continue;
       }

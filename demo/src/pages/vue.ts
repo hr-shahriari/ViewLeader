@@ -21,13 +21,14 @@ import { computed, createApp, h, nextTick, ref, shallowRef, watch, type VNode } 
 import '../shared/example.css';
 import { claimChromeEdges } from '../shared/chromeInsets';
 import { createControlBar } from '../shared/controls';
+import { FOLLOWED, HINT, SWATCHES, TOOLBAR, handleStyle, seedNotes, swatchStyle } from '../shared/frameworkDemo';
 import {
   createExampleHarness,
   exposeExampleManager,
   markExampleFailed,
   markExampleReady,
 } from '../shared/harness';
-import { MOCK_ELEMENTS, SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
+import { SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
 
 try {
   const viewport = document.querySelector<HTMLElement>('#viewport');
@@ -44,22 +45,6 @@ try {
     modelBounds: () => [building.root],
     occlusion: { objects: () => [building.root], epsilon: SELF_OCCLUSION_EPSILON },
   });
-
-  const NOTES = [
-    { key: 'roof', element: MOCK_ELEMENTS.roofSlab, title: 'Roof slab', text: 'RC 200 mm' },
-    { key: 'door', element: MOCK_ELEMENTS.frontDoor, title: 'Front door', text: 'D-04' },
-    { key: 'column', element: MOCK_ELEMENTS.cornerColumn, title: 'Corner column', text: 'C-12' },
-  ] as const;
-
-  const SWATCHES = ['#1f2937', '#b91c1c', '#047857'] as const;
-
-  /** Absolutely positioned against the boundary; the registry writes the transform every frame. */
-  const followed = {
-    position: 'absolute',
-    top: '0',
-    left: '0',
-    pointerEvents: 'auto',
-  } as const;
 
   const generation = ref(1);
   let binding: ReturnType<typeof useViewLeader> | undefined;
@@ -91,20 +76,7 @@ try {
       // When the composable produces a live instance, seed this generation's notes.
       watch(live, (leader) => {
         if (!leader) return;
-        for (const note of NOTES) {
-          leader.annotations.create({
-            id: `${note.key}-${generation.value}`,
-            anchor: {
-              kind: 'element',
-              modelId: 'building',
-              elementId: note.element.id,
-              // Where the leader points if the element is not in the model this session.
-              fallbackPoint: note.element.point,
-            },
-            content: { kind: 'callout', title: note.title, text: note.text },
-          });
-        }
-        leader.annotations.select([`${NOTES[0].key}-${generation.value}`]);
+        seedNotes(leader, generation.value);
         // The composable builds a NEW runtime for every mounted boundary, and insets live on the
         // runtime, so the claim has to be made again here or the fresh instance lays labels back
         // under the control dock.
@@ -126,21 +98,7 @@ try {
             key: entry.key,
             ref: handles.ref(entry),
             ...entry.props,
-            style: {
-              ...followed,
-              width: '9px',
-              height: '9px',
-              marginLeft: '-5px',
-              marginTop: '-5px',
-              cursor: entry.cursor,
-              // Square for the arrow end, round for anything that reshapes the leader.
-              borderRadius: entry.kind === 'handle' ? '2px' : '5px',
-              // A midpoint inserts a bend rather than moving one, and hollow-versus-solid is the
-              // only thing on screen that says so.
-              background: entry.cursor === 'copy' ? '#fff' : '#2563eb',
-              border: '1.5px solid #2563eb',
-              boxSizing: 'border-box',
-            },
+            style: handleStyle(entry),
           })),
           // A label target carries the label's size as well as its position, so this shell *is* the
           // label's box and the toolbar sits above it with `bottom: 100%` rather than guessing an
@@ -148,39 +106,14 @@ try {
           h('div', {
             key: 'toolbar',
             ref: toolbar,
-            style: followed,
-          }, [h('div', {
-            style: {
-              position: 'absolute',
-              left: '0',
-              bottom: 'calc(100% + 6px)',
-              display: 'flex',
-              gap: '4px',
-              padding: '4px',
-              background: '#fff',
-              border: '1px solid #d4d8e0',
-              borderRadius: '6px',
-              boxShadow: '0 2px 8px rgb(16 20 28 / 12%)',
-            },
-          }, SWATCHES.map((colour) => h('button', {
+            style: FOLLOWED,
+          }, [h('div', { style: TOOLBAR }, SWATCHES.map((colour) => h('button', {
             key: colour,
             type: 'button',
             'aria-label': `Line colour ${colour}`,
             'data-swatch': colour,
             onClick: () => style.value?.set('lineColor', colour),
-            style: {
-              width: '18px',
-              height: '18px',
-              padding: '0',
-              borderRadius: '4px',
-              background: colour,
-              cursor: 'pointer',
-              // `mixed` is a real state, not an absent one: with several selected and disagreeing,
-              // no swatch is the current one.
-              border: current?.mixed === false && current.value === colour
-                ? '2px solid #111'
-                : '1px solid #d4d8e0',
-            },
+            style: swatchStyle(colour, current),
           })))]),
         ];
       };
@@ -209,8 +142,7 @@ try {
     await nextTick();
     bar.status('Vue disposed the prior instance and reconstructed for the keyed element.');
   });
-  bar.status('Click a label to select it. Drag its handles, double-click to retype, recolour from'
-    + ' the toolbar, nudge with the arrows. Every element here belongs to the page.');
+  bar.status(HINT);
   // Both of these have to exist BEFORE `app.mount()`, and the order is not a style choice. The
   // composable sets `viewLeader` from a `flush: 'sync'` watcher on the boundary ref, and the ref is
   // set while the component's render effect is still running, so the watcher above — plain `watch`,

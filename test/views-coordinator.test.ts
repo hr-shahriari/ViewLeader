@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SavedViewCoordinator,
-  SavedViewError,
   type AnnotationViewAdapter,
   type LinearTourDefinition,
   type MutableSavedViewDocument,

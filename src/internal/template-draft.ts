@@ -143,7 +143,7 @@ function captureContentShape(content: AnnotationContent): AnnotationContent {
 // ---------------------------------------------------------------------------------------------
 
 /** The three fields the live checker reports on. The rest of a template cannot be typed wrong. */
-export type TemplateDraftField = 'id' | 'name' | 'defaults.styleId';
+type TemplateDraftField = 'id' | 'name' | 'defaults.styleId';
 
 /**
  * One thing wrong with the draft, reported rather than thrown.
@@ -405,7 +405,7 @@ function mergeDefaults(
   };
 }
 
-/** The same four fields `applyTemplateToAnnotation` writes, as a patch. */
+/** The four fields a template supplies, as a patch. */
 function templatePatch(defaults: TemplateDefaults): AnnotationPatch {
   return {
     ...(defaults.content === undefined ? {} : { content: defaults.content }),

@@ -20,12 +20,10 @@ import {
 } from './arrange.js';
 import {
   DocumentEngine,
-  type DocumentLimits,
   type TransactionOptions,
 } from './document.js';
 import {
   EditingController,
-  type EditingCancellationReason,
   type EditingOptions,
   type EditingSnapshot,
 } from './editing.js';
@@ -41,12 +39,7 @@ import {
   type TemplateApplicable,
   type TypedDefinition,
 } from './definitions.js';
-import {
-  DisposedError,
-  InvalidConfigurationError,
-  InvalidDocumentError,
-  NotFoundError,
-} from './errors.js';
+import { domainError, InvalidDocumentError } from './errors.js';
 import { ExtensionRuntime, type PluginDescriptor } from './extensions.js';
 import { keynotesOf, type KeynoteEntry } from './keynotes.js';
 import { MarkupAuthoringCapability } from './markup-authoring-capability.js';
@@ -56,16 +49,11 @@ import {
 } from './plugin-authoring.js';
 import type { AnnotationScreenGeometry, InkScreenGeometry, ScreenHit } from './render.js';
 import type { Diagnostic, HostAdapterBundle, NormalizedPointerInput } from './host.js';
-import { ViewLeaderRuntime, type FrameLintOptions, type LayoutStrategies } from './runtime.js';
+import { ViewLeaderRuntime, runCleanupSteps, type FrameLintOptions, type LayoutStrategies } from './runtime.js';
 import type { PlacementMode, ViewportInsets } from './labelPlacer.js';
 import type { LintFinding } from './lint.js';
 import type { Theme } from './theme.js';
-import {
-  createViewsCapability,
-  prepareViewsDocument,
-  type CreatedViewsCapability,
-  type ViewsCapability,
-} from './views.js';
+import { createViewsCapability, prepareViewsDocument, type ViewsCapability } from './views.js';
 import type {
   Anchor,
   Annotation,
@@ -82,7 +70,7 @@ import type {
   Vec2,
   ViewLeaderDocument,
 } from './types.js';
-import { linkFrameSeam, unlinkFrameSeam } from './internal/frame-seam.js';
+import { clearFrameSeam, linkFrameSeam } from './internal/frame-seam.js';
 
 export interface ViewLeaderOptions {
   /**
@@ -108,9 +96,7 @@ export interface ViewLeaderOptions {
   readonly adapters: HostAdapterBundle;
   readonly initialDocument?: string | ViewLeaderDocument;
   readonly historyCapacity?: number;
-  readonly documentLimits?: Partial<DocumentLimits>;
   readonly plugins?: readonly PluginDescriptor[];
-  readonly selfDrive?: boolean;
   readonly editing?: EditingOptions;
   /**
    * An element that wheel events over the overlay are re-dispatched to — the viewer's canvas, so
@@ -227,7 +213,6 @@ export interface DefinitionsPublicCapability extends SnapshotCapability<Definiti
   update<Definition extends TypedDefinition>(id: string, replacement: Definition): Definition;
   remove(id: string): TypedDefinition;
   applyTemplate<Target extends TemplateApplicable>(target: Target, templateId: string): Target;
-  applyTemplateToAnnotation(annotationId: string, templateId: string): Annotation;
 }
 
 export interface DiagnosticsCapability {
@@ -282,7 +267,7 @@ export interface EditingCapability extends SnapshotCapability<EditingSnapshot> {
   pointerMove(pointer: NormalizedPointerInput): void;
   pointerUp(pointer: NormalizedPointerInput): void;
   /** Abandons the gesture. Costs no undo step, because nothing was written. */
-  cancel(reason?: EditingCancellationReason): void;
+  cancel(): void;
 }
 
 interface PreparedReplacement {
@@ -309,20 +294,19 @@ export class ViewLeader {
   readonly #markup: MarkupAuthoringCapability;
   readonly #pluginAuthoring: PluginAuthoringController;
   readonly #extensions: ExtensionRuntime;
-  readonly #views: CreatedViewsCapability;
+  readonly #views: ReturnType<typeof createViewsCapability>;
   #disposed = false;
 
   public constructor(options: ViewLeaderOptions) {
     if (options === null || typeof options !== 'object') {
-      throw new InvalidConfigurationError('ViewLeader options are required');
+      throw domainError('INVALID_CONFIGURATION', 'ViewLeader options are required');
     }
     if (!isElement(options.boundary)) {
-      throw new InvalidConfigurationError('boundary must be a DOM Element');
+      throw domainError('INVALID_CONFIGURATION', 'boundary must be a DOM Element');
     }
     this.#boundary = options.boundary;
     this.#document = new DocumentEngine({
       ...(options.historyCapacity === undefined ? {} : { historyCapacity: options.historyCapacity }),
-      ...(options.documentLimits === undefined ? {} : { limits: options.documentLimits }),
     });
     const loadDiagnostics: Diagnostic[] = [];
     const initialDocument = options.initialDocument === undefined
@@ -359,72 +343,57 @@ export class ViewLeader {
       throw error;
     }
     invalidateRuntime = () => this.#runtime.invalidate();
-    let views: CreatedViewsCapability | undefined;
-    let authoring: AuthoringController | undefined;
-    let editing: EditingController | undefined;
-    let pluginAuthoring: PluginAuthoringController | undefined;
-    let markup: MarkupAuthoringCapability | undefined;
+    // The one-tool-at-a-time rule, in one place. Every controller's start() calls this before
+    // taking over. Cancelling an idle controller is a no-op, so each safely cancels itself too.
+    const preempt = (): void => {
+      this.#authoring?.cancel('preempted');
+      this.#markup?.cancel('preempted');
+      this.#pluginAuthoring?.cancel('preempted');
+    };
     try {
-      views = createViewsCapability({
+      this.#views = createViewsCapability({
         document: this.#document,
         runtime: this.#runtime,
         ...(options.adapters.viewerState === undefined
           ? {}
           : { viewerState: options.adapters.viewerState }),
-        assertActive: () => this.#assertActive(),
       });
-      this.#views = views;
-      authoring = new AuthoringController(options.boundary, this.#document, this.#runtime);
-      this.#authoring = authoring;
-      editing = new EditingController({
+      this.#authoring = new AuthoringController(options.boundary, this.#document, this.#runtime, preempt);
+      this.#markup = new MarkupAuthoringCapability({
+        document: this.#document,
+        prepareContent: (content) => this.#preparePluginContent(content),
+        validateStyleId: (styleId) => this.#requireStyleId(styleId),
+        boundary: options.boundary,
+        ...(options.adapters.surfacePicking === undefined
+          ? {}
+          : { surfacePicking: options.adapters.surfacePicking }),
+        ...(options.adapters.interaction === undefined
+          ? {}
+          : { interaction: options.adapters.interaction }),
+        getStamp: () => ({
+          runtimeRevision: this.#runtime.runtimeRevision,
+          documentRevision: this.#document.documentRevision,
+        }),
+        publishTransientChange: (render) => this.#runtime.publishTransientChange(render),
+        preemptOthers: preempt,
+      });
+      this.#editing = new EditingController({
         boundary: options.boundary,
         document: this.#document,
         runtime: this.#runtime,
-        // Fetched on demand: markup is built a few lines further down, and a drag cannot possibly
-        // need it until long after that.
-        markup: () => this.#markup,
+        markup: this.#markup,
         ...(options.editing === undefined ? {} : { editing: options.editing }),
         toolActive: () => this.#toolActive(),
       });
-      this.#editing = editing;
-      pluginAuthoring = new PluginAuthoringController({
+      this.#pluginAuthoring = new PluginAuthoringController({
         document: this.#document,
         extensions: this.#extensions,
         runtime: this.#runtime,
         ...(options.adapters.interaction === undefined
           ? {}
           : { interaction: options.adapters.interaction }),
-        preemptBuiltIn: () => {
-          authoring?.cancel('preempted');
-          markup?.cancel('preempted');
-        },
+        preemptBuiltIn: preempt,
       });
-      this.#pluginAuthoring = pluginAuthoring;
-      markup = new MarkupAuthoringCapability(
-        this.#document,
-        () => this.#assertActive(),
-        (content) => this.#preparePluginContent(content),
-        (styleId) => this.#requireStyleId(styleId),
-        {
-          boundary: options.boundary,
-          ...(options.adapters.surfacePicking === undefined
-            ? {}
-            : { surfacePicking: options.adapters.surfacePicking }),
-          ...(options.adapters.interaction === undefined
-            ? {}
-            : { interaction: options.adapters.interaction }),
-          getStamp: () => ({
-            runtimeRevision: this.#runtime.runtimeRevision,
-            documentRevision: this.#document.documentRevision,
-          }),
-          publishTransientChange: (render) => this.#runtime.publishTransientChange(render),
-          preemptOthers: () => {
-            authoring?.cancel('preempted');
-            pluginAuthoring?.cancel('preempted');
-          },
-        },
-      );
-      this.#markup = markup;
       // Everything holding in-progress state has to react to a change before subscribers are told
       // about it, or a host would read a snapshot while half the engine still described the old
       // document.
@@ -455,26 +424,18 @@ export class ViewLeader {
       this.authoring = this.#createAuthoringCapability();
       this.documents = this.#createDocumentsCapability();
       this.history = this.#createHistoryCapability();
-      this.definitions = this.#guardDefinitions(definitions);
-      this.views = this.#views.capability;
-      this.diagnostics = Object.freeze({
-        getSnapshot: () => {
-          this.#assertActive();
-          return this.#runtime.diagnosticsSnapshot();
-        },
-        subscribe: (listener: (diagnostic: Diagnostic) => void) => {
-          this.#assertActive();
-          return this.#runtime.subscribeDiagnostics(listener);
-        },
-        lintFrame: (options: FrameLintOptions) => {
-          this.#assertActive();
-          return this.#runtime.lintFrame(options);
-        },
-      });
-      this.geometry = Object.freeze({
-        of: (id: string) => { this.#assertActive(); return this.#runtime.geometryOf(id); },
-        ofInk: (id: string) => { this.#assertActive(); return this.#runtime.geometryOfInk(id); },
-      });
+      this.definitions = guarded(definitions, this.#assertActive);
+      this.views = guarded(this.#views, this.#assertActive);
+      this.diagnostics = guarded({
+        getSnapshot: () => this.#runtime.diagnosticsSnapshot(),
+        subscribe: (listener: (diagnostic: Diagnostic) => void) =>
+        this.#runtime.subscribeDiagnostics(listener),
+        lintFrame: (options: FrameLintOptions) => this.#runtime.lintFrame(options),
+      }, this.#assertActive);
+      this.geometry = guarded({
+        of: (id: string) => this.#runtime.geometryOf(id),
+        ofInk: (id: string) => this.#runtime.geometryOfInk(id),
+      }, this.#assertActive);
       this.editing = this.#createEditingCapability();
       // The runtime is the thing that draws frames, but callers only ever hold a `ViewLeader`.
       // Linking them here keeps the seam reachable from `src/internal/` without putting a method on
@@ -482,18 +443,9 @@ export class ViewLeader {
       linkFrameSeam(this, this.#runtime);
 
       this.#publishDiagnostics(initialDiagnostics);
-      if (options.selfDrive === true) this.start();
     } catch (error) {
       this.#disposed = true;
-      const cleanupErrors = runCleanupSteps([
-        () => pluginAuthoring?.dispose(),
-        () => editing?.dispose(),
-        () => authoring?.dispose(),
-        () => markup?.dispose(),
-        () => views?.dispose(),
-        () => this.#runtime.dispose(),
-        () => this.#extensions.dispose(),
-      ]);
+      const cleanupErrors = runCleanupSteps(this.#cleanupSteps());
       if (cleanupErrors.length > 0) {
         throw new AggregateError([error, ...cleanupErrors], 'ViewLeader construction failed during cleanup');
       }
@@ -501,19 +453,24 @@ export class ViewLeader {
     }
   }
 
+  /** Every owned resource, in the order dispose() releases them. The first five are read through
+   *  `?.` because the constructor's failure path calls this before they are all built; the runtime
+   *  and extensions always exist by then. */
+  #cleanupSteps(): Array<() => void> {
+    return [
+      () => this.#views?.dispose(),
+      () => this.#pluginAuthoring?.dispose(),
+      () => this.#editing?.dispose(),
+      () => this.#authoring?.dispose(),
+      () => this.#markup?.dispose(),
+      () => this.#extensions.dispose(),
+      () => this.#runtime.dispose(),
+    ];
+  }
+
   public update(): void {
     this.#assertActive();
     this.#runtime.update();
-  }
-
-  public start(): void {
-    this.#assertActive();
-    this.#runtime.start();
-  }
-
-  public stop(): void {
-    this.#assertActive();
-    this.#runtime.stop();
   }
 
   /**
@@ -535,6 +492,9 @@ export class ViewLeader {
   /**
    * How labels are arranged around the model: `'sides'` in columns left and right, `'rows'` across
    * the top and bottom, or `'auto'` — the default — which chooses by the model's shape.
+   * `'quadrants'` jointly organizes automatic labels and routes: short side exits near the edge,
+   * ordered top/bottom escape lanes for deeper or competing anchors. Manual routes, regions and
+   * locked labels keep their existing behavior and act as obstacles for organized annotations.
    *
    * Automatic is deliberately reluctant to change its mind, so orbiting past the threshold cannot
    * flip the entire drawing back and forth.
@@ -547,6 +507,23 @@ export class ViewLeader {
   public setPlacementMode(mode: PlacementMode): void {
     this.#assertActive();
     this.#runtime.setPlacementMode(mode);
+  }
+
+  /**
+   * Keeps every label outside the current model rectangle, even if it leaves the viewport.
+   * Manual and locked positions are adjusted only for display; their authored positions remain
+   * intact. Requires model bounds and the host's safe bounds-projection capability (included in
+   * the Three adapter). While these are unavailable, labels are withheld and a diagnostic explains
+   * why. This viewer setting is not saved in the annotation document.
+   */
+  public setKeepLabelsOutsideModel(enabled: boolean): void {
+    this.#assertActive();
+    this.#runtime.setKeepLabelsOutsideModel(enabled);
+  }
+
+  public get keepLabelsOutsideModel(): boolean {
+    this.#assertActive();
+    return this.#runtime.keepLabelsOutsideModel;
   }
 
   /**
@@ -653,41 +630,30 @@ export class ViewLeader {
     this.#disposed = true;
     // Before the steps below: a subscribe racing disposal should find nothing rather than a
     // plausible-looking subscription to an emitter that will never fire again.
-    unlinkFrameSeam(this);
-    const cleanupErrors = runCleanupSteps([
-      () => this.#views.dispose(),
-      () => this.#pluginAuthoring.dispose(),
-      () => this.#editing.dispose(),
-      () => this.#authoring.dispose(),
-      () => this.#markup.dispose(),
-      () => this.#extensions.dispose(),
-      () => this.#runtime.dispose(),
-    ]);
+    clearFrameSeam(this);
+    const cleanupErrors = runCleanupSteps(this.#cleanupSteps());
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'ViewLeader disposal failed');
     }
   }
 
   #createAnnotationsCapability(): AnnotationsCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.annotationsSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
-      get: (id: string) => { this.#assertActive(); return this.#document.get(id); },
+    return guarded({
+      getSnapshot: () => this.#runtime.annotationsSnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
+      get: (id: string) => this.#document.get(id),
       create: (draft: AnnotationDraft) => {
-        this.#assertActive();
         this.#requireStyleId(draft.styleId);
         return this.#document.create({ ...draft, content: this.#preparePluginContent(draft.content) });
       },
       update: (id: string, patch: AnnotationPatch) => {
-        this.#assertActive();
         this.#requireStyleId(typeof patch.styleId === 'string' ? patch.styleId : undefined);
         return this.#document.update(id, patch.content === undefined
           ? patch
           : { ...patch, content: this.#preparePluginContent(patch.content) });
       },
-      remove: (id: string) => { this.#assertActive(); return this.#document.remove(id); },
+      remove: (id: string) => this.#document.remove(id),
       move: (id: string, position: Vec2) => {
-        this.#assertActive();
         // Kind-preserving. An absolute point goes in either way, but a label that already follows
         // its anchor keeps following it — otherwise a single arrow-key nudge silently undoes the
         // drag that placed it (the gallery's own host-chrome page nudges exactly this way). One
@@ -699,16 +665,10 @@ export class ViewLeader {
           : { kind: 'manual' as const, position };
         return this.#document.update(id, { placement }, 'Move annotation');
       },
-      retarget: (id: string, anchor: Anchor) => {
-        this.#assertActive();
-        return this.#document.update(id, { anchor }, 'Retarget annotation');
-      },
-      reroute: (id: string, routing: AnnotationRouting) => {
-        this.#assertActive();
-        return this.#document.update(id, { routing }, 'Reroute annotation');
-      },
+      retarget: (id: string, anchor: Anchor) => this.#document.update(id, { anchor }, 'Retarget annotation'),
+      reroute: (id: string, routing: AnnotationRouting) =>
+        this.#document.update(id, { routing }, 'Reroute annotation'),
       rerouteLeg: (id: string, legId: string, routing: AnnotationRouting) => {
-        this.#assertActive();
         return this.#document.update(
           id,
           { anchors: this.#withLeg(id, legId, (leg) => ({ ...leg, routing })) },
@@ -716,43 +676,32 @@ export class ViewLeader {
         );
       },
       retargetLeg: (id: string, legId: string, anchor: Anchor) => {
-        this.#assertActive();
         return this.#document.update(
           id,
           { anchors: this.#withLeg(id, legId, (leg) => ({ ...leg, anchor })) },
           'Retarget annotation leg',
         );
       },
-      resetPlacement: (id: string) => {
-        this.#assertActive();
-        return this.#document.update(id, { placement: { kind: 'automatic' } }, 'Reset annotation placement');
-      },
-      resetRouting: (id: string, mode: 'straight' | 'dogleg' | 'orthogonal' = 'straight') => {
-        this.#assertActive();
-        return this.#document.update(id, { routing: { kind: 'automatic', mode } }, 'Reset annotation routing');
-      },
+      resetPlacement: (id: string) =>
+        this.#document.update(id, { placement: { kind: 'automatic' } }, 'Reset annotation placement'),
+      resetRouting: (id: string, mode: 'straight' | 'dogleg' | 'orthogonal' = 'straight') =>
+        this.#document.update(id, { routing: { kind: 'automatic', mode } }, 'Reset annotation routing'),
       align: (edge: AlignEdge) => {
-        this.#assertActive();
         this.#arrange(alignMoves(this.#selectedTargets(), edge), 'Align annotations');
       },
       distribute: (axis: 'x' | 'y') => {
-        this.#assertActive();
         this.#arrange(distributeMoves(this.#selectedTargets(), axis), 'Distribute annotations');
       },
       select: (ids: readonly string[]) => {
-        this.#assertActive();
         for (const id of ids) this.#requireAnnotation(id);
         this.#runtime.select(ids);
       },
-      toggle: (id: string) => { this.#assertActive(); this.#requireAnnotation(id); this.#runtime.toggleSelection(id); },
-      deselect: (id: string) => { this.#assertActive(); this.#requireAnnotation(id); this.#runtime.deselect(id); },
-      clearSelection: () => { this.#assertActive(); this.#runtime.clearSelection(); },
-      keynotes: () => { this.#assertActive(); return keynotesOf(this.#document.document.annotations); },
-      resolvedStyle: (id: string) => {
-        this.#assertActive();
-        return this.#runtime.resolvedStyleOf(id);
-      },
-    });
+      toggle: (id: string) => { this.#requireAnnotation(id); this.#runtime.toggleSelection(id); },
+      deselect: (id: string) => { this.#requireAnnotation(id); this.#runtime.deselect(id); },
+      clearSelection: () => { this.#runtime.clearSelection(); },
+      keynotes: () => keynotesOf(this.#document.document.annotations),
+      resolvedStyle: (id: string) => this.#runtime.resolvedStyleOf(id),
+    }, this.#assertActive);
   }
 
   /**
@@ -785,20 +734,19 @@ export class ViewLeader {
     replace: (leg: AnnotationLeg) => AnnotationLeg,
   ): readonly AnnotationLeg[] {
     const current = this.#requireAnnotation(id);
-    if (!current.anchors.some((leg) => leg.id === legId)) throw new NotFoundError('annotation leg', legId);
+    if (!current.anchors.some((leg) => leg.id === legId)) {
+      throw domainError('NOT_FOUND', `Unknown annotation leg: ${legId}`, { id: legId });
+    }
     return current.anchors.map((leg) => leg.id === legId ? replace(leg) : leg);
   }
 
   #createAuthoringCapability(): AuthoringCapability {
-    return Object.freeze({
-      markup: this.#markup,
-      plugins: this.#pluginAuthoring,
-      getSnapshot: () => { this.#assertActive(); return this.#authoring.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#authoring.subscribe(listener); },
+    return guarded({
+      markup: guarded(this.#markup, this.#assertActive),
+      plugins: guarded(this.#pluginAuthoring, this.#assertActive),
+      getSnapshot: () => this.#authoring.getSnapshot(),
+      subscribe: (listener: () => void) => this.#authoring.subscribe(listener),
       start: (options: StartAuthoringOptions) => {
-        this.#assertActive();
-        this.#pluginAuthoring.cancel('preempted');
-        this.#markup.cancel('preempted');
         return this.#authoring.start({
           ...options,
           draft: {
@@ -807,13 +755,13 @@ export class ViewLeader {
           },
         });
       },
-      pointerMove: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#authoring.pointerMove(pointer); },
-      pointerDown: (pointer: NormalizedPointerInput) => { this.#assertActive(); return this.#authoring.pointerDown(pointer); },
-      complete: (anchor: Anchor) => { this.#assertActive(); return this.#authoring.complete(anchor); },
-      addVertex: (point: Vec2) => { this.#assertActive(); return this.#authoring.addVertex(point); },
-      finish: () => { this.#assertActive(); return this.#authoring.finish(); },
-      cancel: () => { this.#assertActive(); return this.#authoring.cancel(); },
-    });
+      pointerMove: (pointer: NormalizedPointerInput) => { this.#authoring.pointerMove(pointer); },
+      pointerDown: (pointer: NormalizedPointerInput) => this.#authoring.pointerDown(pointer),
+      complete: (anchor: Anchor) => this.#authoring.complete(anchor),
+      addVertex: (point: Vec2) => this.#authoring.addVertex(point),
+      finish: () => this.#authoring.finish(),
+      cancel: () => this.#authoring.cancel(),
+    }, this.#assertActive);
   }
 
   /** True while a drawing tool is active, which is when editing gestures get out of the way. */
@@ -824,109 +772,66 @@ export class ViewLeader {
   }
 
   #createEditingCapability(): EditingCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#editing.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#editing.subscribe(listener); },
-      hitTest: (pointer: NormalizedPointerInput) => { this.#assertActive(); return this.#editing.hitTest(pointer); },
-      hitTestScreen: (at: Vec2) => { this.#assertActive(); return this.#editing.hitTestScreen(at); },
-      pointerDown: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerDown(pointer); },
+    return guarded({
+      getSnapshot: () => this.#editing.getSnapshot(),
+      subscribe: (listener: () => void) => this.#editing.subscribe(listener),
+      hitTest: (pointer: NormalizedPointerInput) => this.#editing.hitTest(pointer),
+      hitTestScreen: (at: Vec2) => this.#editing.hitTestScreen(at),
+      pointerDown: (pointer: NormalizedPointerInput) => { this.#editing.pointerDown(pointer); },
       beginHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginHandleDrag(id, index, pointer);
       },
       beginRouteHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginRouteHandleDrag(id, index, pointer);
       },
       beginRegionHandleDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
         this.#requireAnnotation(id);
         this.#editing.beginRegionHandleDrag(id, index, pointer);
       },
       beginInkPointDrag: (id: string, index: number, pointer: NormalizedPointerInput) => {
-        this.#assertActive();
-        if (this.#markup.getInk(id) === undefined) throw new NotFoundError('ink', id);
+        if (this.#markup.getInk(id) === undefined) throw domainError('NOT_FOUND', `Unknown ink: ${id}`, { id });
         this.#editing.beginInkPointDrag(id, index, pointer);
       },
-      pointerMove: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerMove(pointer); },
-      pointerUp: (pointer: NormalizedPointerInput) => { this.#assertActive(); this.#editing.pointerUp(pointer); },
-      cancel: (reason?: EditingCancellationReason) => {
-        this.#assertActive();
-        this.#editing.cancel(reason);
-      },
-    });
+      pointerMove: (pointer: NormalizedPointerInput) => { this.#editing.pointerMove(pointer); },
+      pointerUp: (pointer: NormalizedPointerInput) => { this.#editing.pointerUp(pointer); },
+      cancel: () => { this.#editing.cancel(); },
+    }, this.#assertActive);
   }
 
   #createDocumentsCapability(): DocumentsCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.documentsSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
+    return guarded({
+      getSnapshot: () => this.#runtime.documentsSnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
       parse: (source: string) => {
-        this.#assertActive();
         const loadDiagnostics: Diagnostic[] = [];
         const prepared = this.#prepareReplacement(this.#load(source, loadDiagnostics));
         this.#publishDiagnostics([...loadDiagnostics, ...prepared.diagnostics]);
         return prepared.document;
       },
-      serialize: () => { this.#assertActive(); return this.#document.serialize(); },
+      serialize: () => this.#document.serialize(),
       replace: (value: string | ViewLeaderDocument) => {
-        this.#assertActive();
         const loadDiagnostics: Diagnostic[] = [];
         const prepared = this.#prepareReplacement(this.#load(value, loadDiagnostics));
         const replaced = this.#document.replace(prepared.document);
         this.#publishDiagnostics([...loadDiagnostics, ...prepared.diagnostics]);
         return replaced;
       },
-    });
+    }, this.#assertActive);
   }
 
   #createHistoryCapability(): HistoryCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return this.#runtime.historySnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return this.#runtime.subscribe(listener); },
-      transaction: <Result>(label: string, operation: () => Result, options?: TransactionOptions) => {
-        this.#assertActive();
-        return this.#document.transaction(label, operation, options);
-      },
-      undo: () => { this.#assertActive(); return this.#document.undo(); },
-      redo: () => { this.#assertActive(); return this.#document.redo(); },
-    });
+    return guarded({
+      getSnapshot: () => this.#runtime.historySnapshot(),
+      subscribe: (listener: () => void) => this.#runtime.subscribe(listener),
+      transaction: <Result>(label: string, operation: () => Result, options?: TransactionOptions) =>
+        this.#document.transaction(label, operation, options),
+      undo: () => this.#document.undo(),
+      redo: () => this.#document.redo(),
+    }, this.#assertActive);
   }
 
-  #guardDefinitions(capability: DefinitionsCapability): DefinitionsPublicCapability {
-    return Object.freeze({
-      getSnapshot: () => { this.#assertActive(); return capability.getSnapshot(); },
-      subscribe: (listener: () => void) => { this.#assertActive(); return capability.subscribe(listener); },
-      list: (kind?: DefinitionKind) => { this.#assertActive(); return capability.list(kind); },
-      get: (id: string) => { this.#assertActive(); return capability.get(id); },
-      create: <Definition extends TypedDefinition>(definition: Definition) => {
-        this.#assertActive(); return capability.create(definition);
-      },
-      update: <Definition extends TypedDefinition>(id: string, replacement: Definition) => {
-        this.#assertActive(); return capability.update(id, replacement);
-      },
-      remove: (id: string) => { this.#assertActive(); return capability.remove(id); },
-      applyTemplate: <Target extends TemplateApplicable>(target: Target, templateId: string) => {
-        this.#assertActive(); return capability.applyTemplate(target, templateId);
-      },
-      applyTemplateToAnnotation: (annotationId: string, templateId: string) => {
-        this.#assertActive();
-        this.#requireAnnotation(annotationId);
-        const defaults = capability.applyTemplate<TemplateApplicable>({}, templateId);
-        const content = defaults.content === undefined
-          ? undefined
-          : this.#preparePluginContent(defaults.content);
-        return this.#document.update(annotationId, {
-          ...(content === undefined ? {} : { content }),
-          ...(defaults.styleId === undefined ? {} : { styleId: defaults.styleId }),
-          ...(defaults.placement === undefined ? {} : { placement: defaults.placement }),
-          ...(defaults.routing === undefined ? {} : { routing: defaults.routing }),
-        }, 'Apply annotation template');
-      },
-    });
-  }
 
   #preparePluginContent(content: Annotation['content']): Annotation['content'] {
     if (!content.kind.startsWith('plugin:')) return content;
@@ -1057,7 +962,7 @@ export class ViewLeader {
 
   #requireAnnotation(id: string): Annotation {
     const annotation = this.#document.get(id);
-    if (annotation === undefined) throw new NotFoundError('annotation', id);
+    if (annotation === undefined) throw domainError('NOT_FOUND', `Unknown annotation: ${id}`, { id });
     return annotation;
   }
 
@@ -1068,13 +973,13 @@ export class ViewLeader {
       ...definitionsFromCollections(this.#document.document.definitions),
     ];
     if (!definitions.some((definition) => definition.kind === 'style' && definition.id === styleId)) {
-      throw new NotFoundError('style definition', styleId);
+      throw domainError('NOT_FOUND', `Unknown style definition: ${styleId}`, { id: styleId });
     }
   }
 
-  #assertActive(): void {
-    if (this.#disposed) throw new DisposedError();
-  }
+  readonly #assertActive = (): void => {
+    if (this.#disposed) throw domainError('DISPOSED', 'This ViewLeader instance has been disposed');
+  };
 }
 
 function isElement(value: unknown): value is Element {
@@ -1082,10 +987,27 @@ function isElement(value: unknown): value is Element {
     'ownerDocument' in value && 'appendChild' in value && 'getBoundingClientRect' in value;
 }
 
-function runCleanupSteps(steps: readonly (() => void)[]): unknown[] {
-  const errors: unknown[] = [];
-  for (const step of steps) {
-    try { step(); } catch (error) { errors.push(error); }
-  }
-  return errors;
+/**
+ * `target` with every method checking `check()` first. Methods are called with `target` as `this`,
+ * so a class instance keeps its private fields, and each wrapper is made once so a method has one
+ * identity — a host that hands `subscribe` to `useSyncExternalStore` must not resubscribe every
+ * render. Writes are refused, as on the frozen objects this replaces.
+ */
+function guarded<T extends object>(target: T, check: () => void): T {
+  const methods = new Map<PropertyKey, unknown>();
+  return new Proxy(target, {
+    get(object, key) {
+      const value: unknown = Reflect.get(object, key);
+      if (typeof value !== 'function') return value;
+      let method = methods.get(key);
+      if (method === undefined) {
+        method = (...args: unknown[]): unknown => { check(); return value.apply(object, args); };
+        methods.set(key, method);
+      }
+      return method;
+    },
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  });
 }

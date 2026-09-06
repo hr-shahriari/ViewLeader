@@ -39,9 +39,10 @@ describe('keynotes: metadata convention + query helper', () => {
   it('natural-sorts real NCS UDS-7 keys instead of lexicographically, and pairs each with its annotations', () => {
     // Real NCS-shaped keys, deliberately out of order, covering: a bare category with no keynote
     // suffix at all, a bare-digit suffix next to a lettered one, a deeper sub-segment ('A1.2') that
-    // gives its sibling an unequal run count, and leading zeros ('A09' vs 'A9') next to the
-    // headline case the ticket names ('A3' before 'A10' — the pair a lexicographic sort gets
-    // backwards, since 'A10' < 'A3' when compared as plain strings).
+    // gives its sibling an unequal run count, and leading zeros ('A09' vs 'A9' — the same number,
+    // ordered by plain string as a convention) next to the headline case the ticket names ('A3'
+    // before 'A10' — the pair a lexicographic sort gets backwards, since 'A10' < 'A3' when
+    // compared as plain strings).
     const root = boundary();
     const leader = new ViewLeader({ boundary: root, adapters: adapters() });
     leader.annotations.create(note('n-a10', '09 91 23.A10'));
@@ -62,8 +63,8 @@ describe('keynotes: metadata convention + query helper', () => {
       '09 91 23.A1',
       '09 91 23.A1.2',
       '09 91 23.A3',
-      '09 91 23.A9',
       '09 91 23.A09',
+      '09 91 23.A9',
       '09 91 23.A10',
     ]);
 
@@ -187,6 +188,17 @@ describe('keynotes: a leading zero breaks ties, it does not dominate', () => {
     expect(keys.indexOf('09 91 03.A1')).toBeLessThan(keys.indexOf('9 91 23.A3'));
     // And the two spellings of the same key stay neighbours.
     expect(Math.abs(keys.indexOf('9 91 23.A3') - keys.indexOf('09 91 23.A3'))).toBe(1);
+    leader.dispose();
+  });
+
+  it('compares letters case-insensitively first, so a1 lands beside A1 rather than after Z', () => {
+    // Collator order, not code-point order: 'B1' < 'a1' as code points, which would file every
+    // lower-case key after every upper-case one.
+    const leader = new ViewLeader({ boundary: boundary(), adapters: adapters() });
+    leader.annotations.create(note('k0', 'B1'));
+    leader.annotations.create(note('k1', 'a1'));
+    leader.annotations.create(note('k2', 'A1'));
+    expect(leader.annotations.keynotes().map((entry) => entry.key)).toEqual(['a1', 'A1', 'B1']);
     leader.dispose();
   });
 

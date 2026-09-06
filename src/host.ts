@@ -7,7 +7,7 @@
 //
 // Only `projection` is required. Everything else is optional, and leaving one out simply turns off
 // the feature that depends on it rather than breaking anything.
-import { AdapterError, InvalidConfigurationError } from './errors.js';
+import { AdapterError, domainError } from './errors.js';
 import type { ViewerStateAdapter } from './saved-views/neutral-types.js';
 import type {
   Anchor,
@@ -32,9 +32,29 @@ export interface ProjectedPoint {
   readonly visible: boolean;
 }
 
+/** An unclipped rectangle in overlay pixels, suitable for a model-clearance guarantee. */
+export interface ProjectedBounds {
+  readonly min: Vec2;
+  readonly max: Vec2;
+}
+
+/**
+ * The explicit result of projecting a model box. `unavailable` means this adapter cannot make a
+ * clipping-aware guarantee; it is deliberately distinct from an empty visible projection.
+ */
+export type ProjectedBoundsResult =
+  | { readonly status: 'available'; readonly bounds: ProjectedBounds }
+  | { readonly status: 'empty' | 'unavailable' };
+
 export interface ProjectionAdapter {
   getViewport(): ViewportSnapshot;
   project(point: Vec3, viewport: ViewportSnapshot): ProjectedPoint | null;
+  /**
+   * Projects a model AABB to a raw, unclipped overlay rectangle. Implementations that offer this
+   * must account for camera clipping, including boxes which cross the near plane. Without it,
+   * strict outside placement is unavailable rather than inferred from unsafe point projections.
+   */
+  projectBounds?(bounds: ModelBounds, viewport: ViewportSnapshot): ProjectedBoundsResult;
   /**
    * A cheap value that changes whenever the camera or viewport does.
    *
@@ -53,7 +73,6 @@ export interface ElementResolveRequest {
 
 export interface ElementResolution {
   readonly worldPoint: Vec3;
-  readonly localId?: string | number;
 }
 
 export interface ElementInvalidation {
@@ -175,9 +194,13 @@ export interface ModelBounds {
  */
 export interface ModelBoundsAdapter {
   get(): ModelBounds | null;
+  /**
+   * A cheap value that changes whenever the target's identity, transform, or geometry changes.
+   * Supplying it lets ViewLeader reuse a copied box while the target is stationary; without it the
+   * adapter is polled on every requested layout pass.
+   */
+  getRevision?(): string | number;
 }
-
-export type NeutralViewerStateAdapter = ViewerStateAdapter;
 
 export interface HostAdapterBundle {
   readonly projection: ProjectionAdapter;
@@ -189,7 +212,7 @@ export interface HostAdapterBundle {
   readonly images?: HostImageAdapter;
   readonly occlusion?: OcclusionAdapter;
   readonly modelBounds?: ModelBoundsAdapter;
-  readonly viewerState?: NeutralViewerStateAdapter;
+  readonly viewerState?: ViewerStateAdapter;
 }
 
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'fatal';
@@ -209,7 +232,7 @@ interface ResolutionRequest {
   readonly controller: AbortController;
 }
 
-export interface ResolvedLeg {
+interface ResolvedLeg {
   readonly status: 'resolved' | 'unresolved';
   readonly worldPoint: Vec3;
 }
@@ -230,6 +253,9 @@ export class HostIntegration {
   readonly #cleanups: Unsubscribe[] = [];
   #document: ViewLeaderDocument | undefined;
   #disposed = false;
+  #modelBoundsRevision: string | number | undefined;
+  #hasModelBoundsRevision = false;
+  #modelBoundsCache: ModelBounds | null = null;
 
   public constructor(
     adapters: HostAdapterBundle,
@@ -237,7 +263,7 @@ export class HostIntegration {
     diagnose: (diagnostic: Diagnostic) => void,
   ) {
     if (adapters === null || typeof adapters !== 'object' || adapters.projection === undefined) {
-      throw new InvalidConfigurationError('A coherent host adapter bundle with projection is required');
+      throw domainError('INVALID_CONFIGURATION', 'A coherent host adapter bundle with projection is required');
     }
     this.#adapters = adapters;
     this.#invalidate = invalidate;
@@ -285,11 +311,54 @@ export class HostIntegration {
 
   /** Where the model is, or nothing if there is no model yet or the host gave an unusable box. */
   public modelBounds(): ModelBounds | null {
-    const bounds = this.#adapters.modelBounds?.get() ?? null;
-    if (bounds === null) return null;
+    const adapter = this.#adapters.modelBounds;
+    if (adapter === undefined) return null;
+    const revision = adapter.getRevision?.();
+    if (adapter.getRevision !== undefined) {
+      if ((typeof revision !== 'string' && typeof revision !== 'number')
+        || (typeof revision === 'number' && !Number.isFinite(revision))) {
+        throw new AdapterError('model bounds revision');
+      }
+      if (this.#hasModelBoundsRevision && Object.is(revision, this.#modelBoundsRevision)) {
+        return this.#modelBoundsCache;
+      }
+    }
+    const bounds = adapter.get();
     // Framing is a nicety, not a requirement. A host returning a broken box should cost the frame
-  // its layout rectangle, never bring down the drawing loop.
-    return isFiniteVec3(bounds.min) && isFiniteVec3(bounds.max) ? bounds : null;
+    // its layout rectangle, never bring down the drawing loop.
+    const copied = bounds === null || !isOrderedBounds(bounds) ? null : copyBounds(bounds);
+    if (adapter.getRevision !== undefined) {
+      // Commit only after `get` and validation succeed. If a transient host failure happened, the
+      // next call at this revision must retry rather than returning the prior revision's cache.
+      this.#hasModelBoundsRevision = true;
+      this.#modelBoundsRevision = revision!;
+      this.#modelBoundsCache = copied;
+    }
+    return copied;
+  }
+
+  /** A clipping-aware model rectangle, or an explicit reason strict placement cannot use one. */
+  public projectBounds(bounds: ModelBounds, viewport: ViewportSnapshot): ProjectedBoundsResult {
+    const projection = this.#adapters.projection;
+    const result: unknown = projection.projectBounds === undefined
+      ? { status: 'unavailable' as const }
+      : projection.projectBounds(bounds, viewport);
+    if (result === null || typeof result !== 'object' || !('status' in result)) {
+      throw new AdapterError('model bounds projection');
+    }
+    const projected = result as ProjectedBoundsResult;
+    if (projected.status !== 'available') {
+      if (projected.status === 'empty' || projected.status === 'unavailable') return projected;
+      throw new AdapterError('model bounds projection');
+    }
+    if (!isOrderedProjectedBounds(projected.bounds)) throw new AdapterError('model bounds projection');
+    return Object.freeze({
+      status: 'available',
+      bounds: Object.freeze({
+        min: Object.freeze({ ...projected.bounds.min }),
+        max: Object.freeze({ ...projected.bounds.max }),
+      }),
+    });
   }
 
   public project(point: Vec3, viewport: ViewportSnapshot): ProjectedPoint | null {
@@ -313,7 +382,7 @@ export class HostIntegration {
     for (const annotation of document.annotations) {
       for (const leg of annotation.anchors) {
         if (leg.anchor.kind !== 'element') continue;
-        expected.set(requestId(annotation.id, leg.id), { annotation, leg });
+        expected.set(compositeKey(annotation.id, leg.id), { annotation, leg });
       }
     }
     for (const [id, request] of this.#requests) {
@@ -342,10 +411,6 @@ export class HostIntegration {
     return cached === undefined
       ? Object.freeze({ status: 'unresolved', worldPoint: anchor.fallbackPoint })
       : Object.freeze({ status: 'resolved', worldPoint: cached.worldPoint });
-  }
-
-  public invalidateElements(invalidation: ElementInvalidation = {}): void {
-    this.#invalidateElements(invalidation);
   }
 
   public dispose(): void {
@@ -388,10 +453,7 @@ export class HostIntegration {
         });
       }
       this.#requests.delete(id);
-      this.#cache.set(key, Object.freeze({
-        worldPoint: Object.freeze({ ...resolution.worldPoint }),
-        ...(resolution.localId === undefined ? {} : { localId: resolution.localId }),
-      }));
+      this.#cache.set(key, Object.freeze({ worldPoint: Object.freeze({ ...resolution.worldPoint }) }));
       this.#invalidate();
     }).catch((cause: unknown) => {
       if (!this.#isCurrent(id, key, token) || isAbortError(cause)) return;
@@ -418,7 +480,7 @@ export class HostIntegration {
     if (this.#disposed) return false;
     const current = this.#requests.get(id);
     if (current?.key !== key || current.token !== token || current.controller.signal.aborted) return false;
-    const [annotationId, legId] = splitRequestId(id);
+    const [annotationId, legId] = splitCompositeKey(id);
     const annotation = this.#document?.annotations.find(({ id: candidate }) => candidate === annotationId);
     const leg = annotation?.anchors.find(({ id: candidate }) => candidate === legId);
     return leg?.anchor.kind === 'element' && elementKey(leg.anchor) === key;
@@ -427,14 +489,14 @@ export class HostIntegration {
   #invalidateElements(invalidation: ElementInvalidation): void {
     if (this.#disposed) return;
     for (const key of [...this.#cache.keys()]) {
-      const [modelId, elementId] = splitElementKey(key);
+      const [modelId, elementId] = splitCompositeKey(key);
       if (
         (invalidation.modelId === undefined || invalidation.modelId === modelId) &&
         (invalidation.elementId === undefined || invalidation.elementId === elementId)
       ) this.#cache.delete(key);
     }
     for (const [id, request] of this.#requests) {
-      const [modelId, elementId] = splitElementKey(request.key);
+      const [modelId, elementId] = splitCompositeKey(request.key);
       if (
         (invalidation.modelId === undefined || invalidation.modelId === modelId) &&
         (invalidation.elementId === undefined || invalidation.elementId === elementId)
@@ -453,26 +515,50 @@ export class HostIntegration {
   }
 }
 
+/**
+ * Joins id parts into one lookup key with a null character, which documents are not allowed to
+ * contain, so the key always splits back into exactly the parts it was built from — an id with a
+ * slash or a colon in it cannot be mistaken for a separator.
+ */
+export function compositeKey(...parts: readonly string[]): string {
+  return parts.join('\u0000');
+}
+
+export function splitCompositeKey(key: string): readonly string[] {
+  return key.split('\u0000');
+}
+
 function elementKey(anchor: Extract<Anchor, { kind: 'element' }>): string {
-  return `${anchor.modelId}\u0000${anchor.elementId}`;
-}
-
-function splitElementKey(key: string): readonly [string, string] {
-  const separator = key.indexOf('\u0000');
-  return [key.slice(0, separator), key.slice(separator + 1)];
-}
-
-function requestId(annotationId: string, legId: string): string {
-  return `${annotationId}\u0000${legId}`;
-}
-
-function splitRequestId(id: string): readonly [string, string] {
-  const separator = id.indexOf('\u0000');
-  return [id.slice(0, separator), id.slice(separator + 1)];
+  return compositeKey(anchor.modelId, anchor.elementId);
 }
 
 function isFiniteVec3(value: Vec3): boolean {
   return [value.x, value.y, value.z].every(Number.isFinite);
+}
+
+function isOrderedBounds(value: ModelBounds): boolean {
+  return isFiniteVec3(value.min) && isFiniteVec3(value.max)
+    && value.min.x <= value.max.x && value.min.y <= value.max.y && value.min.z <= value.max.z;
+}
+
+function copyBounds(value: ModelBounds): ModelBounds {
+  return Object.freeze({
+    min: Object.freeze({ ...value.min }),
+    max: Object.freeze({ ...value.max }),
+  });
+}
+
+function isOrderedProjectedBounds(value: unknown): value is ProjectedBounds {
+  if (value === null || typeof value !== 'object' || !('min' in value) || !('max' in value)) return false;
+  const { min, max } = value as { min: unknown; max: unknown };
+  return isFiniteVec2(min) && isFiniteVec2(max) && min.x <= max.x && min.y <= max.y;
+}
+
+function isFiniteVec2(value: unknown): value is Vec2 {
+  return value !== null && typeof value === 'object'
+    && 'x' in value && 'y' in value
+    && typeof value.x === 'number' && typeof value.y === 'number'
+    && Number.isFinite(value.x) && Number.isFinite(value.y);
 }
 
 function isAbortError(error: unknown): boolean {

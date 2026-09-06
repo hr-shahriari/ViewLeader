@@ -89,13 +89,13 @@
       .tree-eye[aria-pressed='false'] { color: #c4c0b6; }
       .tree-row.is-hidden .tree-name { color: #b0aca2; text-decoration: line-through; }
 
-      /* The minimum inline text field: a box, the label's own font, and Enter. `/host-chrome/` has
-         the thorough version — IME, blur re-entrancy, per-style padding. */
+      /* The shared inline text field (`createTextEditor`). Position, font, padding, alignment
+         and the style's text colour are written inline every frame; `color` here is the fallback
+         for a callout with no style. */
       .host-text-field {
         position: absolute;
         z-index: 20;
         margin: 0;
-        padding: 0;
         border: 1px solid #4b6ef5;
         border-radius: 3px;
         background: #fff;

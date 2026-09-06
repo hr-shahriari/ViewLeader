@@ -10,16 +10,12 @@
 //            your IME, your equipment-database autocomplete and your mobile keyboard.
 //
 // Everything below uses only the public surface: `editing.hitTest`, `geometry.of`, `annotations.*`,
-// `definitions.get` and `history.transaction`. Nothing is imported from library internals.
+// `definitions.get` and `history.transaction`. Nothing is imported from library internals. The text
+// field is the one widget the editing pages share too, so it lives in `shared/leaderTools.ts`.
 import {
   ViewLeader,
-  type AnnotationContent,
   type AnnotationDraft,
   type AnnotationRouting,
-  type CalloutContent,
-  type PlainNoteContent,
-  type StyleDefinition,
-  type TagContent,
   type Vec2,
 } from 'viewleader';
 import { createThreeAdapter } from 'viewleader/three';
@@ -32,6 +28,7 @@ import {
   markExampleFailed,
   markExampleReady,
 } from '../shared/harness';
+import { createTextEditor } from '../shared/leaderTools';
 import { MOCK_ELEMENTS, SELF_OCCLUSION_EPSILON, createMockBuilding } from '../shared/mockBuilding';
 
 try {
@@ -180,7 +177,7 @@ try {
       return;
     }
     openMenu(at, [
-      ['Edit text…', () => openEditor(hit.id)],
+      ['Edit text…', () => textEditor.open(hit.id)],
       ['Reset placement', () => {
         leader.annotations.resetPlacement(hit.id);
         controls.status(`${hit.id} placement is automatic again`);
@@ -205,102 +202,13 @@ try {
   // --- Inline text field ------------------------------------------------------------------------
   // The close case in the audit: core owns the box and the font, and publishes both. What it cannot
   // own is an HTML field over your viewport — spellcheck, IME, autocomplete, mobile keyboards.
-  type TextContent = PlainNoteContent | TagContent | CalloutContent;
-  const asTextContent = (content: AnnotationContent): TextContent | undefined =>
-    content.kind === 'plain-note' || content.kind === 'tag' || content.kind === 'callout'
-      ? content
-      : undefined;
-
-  // `geometry.of(id).text` publishes the resolved family, size and line height. Colour, text
-  // alignment and the content padding are not on that surface, so they come off the style
-  // definition, which is public too.
-  const styleOf = (id: string): StyleDefinition | undefined => {
-    const styleId = leader.annotations.get(id)?.styleId;
-    const definition = styleId === undefined ? undefined : leader.definitions.get(styleId);
-    return definition?.kind === 'style' ? definition : undefined;
-  };
-
-  let editor: { readonly id: string; readonly field: HTMLTextAreaElement } | undefined;
-  const closeEditor = (): void => {
-    // Forget the field before detaching it: removing a focused element fires `blur` synchronously,
-    // and the blur handler below would otherwise commit and detach the same node a second time.
-    const open = editor;
-    editor = undefined;
-    open?.field.remove();
-  };
-
-  /** Re-run every frame: the label moves with the camera, so the field has to move with the label. */
-  const placeEditor = (): void => {
-    if (editor === undefined) return;
-    const geometry = leader.geometry.of(editor.id);
-    if (geometry === undefined) {
-      // Off screen this frame — there is no rect to sit on, and nothing to invent.
-      editor.field.style.visibility = 'hidden';
-      return;
-    }
-    const style = styleOf(editor.id);
-    const align = style?.content?.align ?? (leader.annotations.get(editor.id)?.content.kind === 'tag' ? 'middle' : 'start');
-    const field = editor.field;
-    field.style.visibility = 'visible';
-    field.style.left = `${geometry.label.x}px`;
-    field.style.top = `${geometry.label.y}px`;
-    field.style.width = `${geometry.label.width}px`;
-    field.style.height = `${geometry.label.height}px`;
-    field.style.fontFamily = geometry.text.fontFamily;
-    field.style.fontSize = `${geometry.text.fontSize}px`;
-    field.style.lineHeight = `${geometry.text.lineHeight}px`;
-    field.style.padding = `${style?.content?.padding ?? 0}px`;
-    field.style.textAlign = align === 'middle' ? 'center' : align === 'end' ? 'right' : 'left';
-    if (style !== undefined) field.style.color = style.textColor;
-  };
-
-  const commitEditor = (): void => {
-    if (editor === undefined) return;
-    const { id, field } = editor;
-    const value = field.value;
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    const text = content === undefined ? undefined : asTextContent(content);
-    if (text === undefined || text.text === value) return;
-    leader.annotations.update(id, { content: { ...text, text: value } });
-    controls.status(`${id} text committed — one undo step`);
-  };
-
-  const openEditor = (id: string): void => {
-    closeEditor();
-    const content = leader.annotations.get(id)?.content;
-    const text = content === undefined ? undefined : asTextContent(content);
-    if (text === undefined) {
-      controls.status('That content kind carries no plain text');
-      return;
-    }
-    const field = document.createElement('textarea');
-    field.className = 'host-text-field';
-    field.value = text.text;
-    field.setAttribute('aria-label', `Text of ${id}`);
-    field.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeEditor();
-        return;
-      }
-      // Enter commits; Shift+Enter is a newline — which is why this is a textarea, not an input.
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        commitEditor();
-      }
-    });
-    field.addEventListener('blur', () => commitEditor());
-    viewport.append(field);
-    editor = { id, field };
-    placeEditor();
-    field.focus();
-    field.select();
-  };
+  // `geometry.of(id).text` publishes the resolved family, size and line height; colour, alignment
+  // and padding come off the style definition, which is public too.
+  const textEditor = createTextEditor(leader, viewport, (message) => controls.status(message));
 
   viewport.addEventListener('dblclick', (event) => {
     const hit = leader.editing.hitTestScreen(localPoint(event));
-    if (hit?.kind === 'label') openEditor(hit.id);
+    if (hit?.kind === 'label') textEditor.open(hit.id);
   });
 
   // --- Keyboard ---------------------------------------------------------------------------------
@@ -336,7 +244,7 @@ try {
 
     if (event.key === 'Escape') {
       closeMenu();
-      closeEditor();
+      textEditor.close();
       leader.annotations.clearSelection();
       controls.status('Escape: menu closed, selection cleared');
       return;
@@ -390,7 +298,7 @@ try {
 
   harness.onFrame(() => {
     leader.update();
-    placeEditor();
+    textEditor.place();
   });
   leader.update();
 

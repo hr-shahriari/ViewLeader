@@ -14,14 +14,13 @@ import type {
   ViewerStateOperationContext,
 } from './neutral-types.js';
 import { SavedViewError } from './neutral-types.js';
+import { deepFreeze } from '../internal/freeze.js';
 import {
-  freezeSavedView,
   normalizeLinearTourDefinition,
   normalizeSavedViewDefinition,
-  normalizeViewerState,
 } from './neutral-validation.js';
 
-export interface SavedViewCoordinatorOptions<Prepared, AnnotationSnapshot> {
+interface SavedViewCoordinatorOptions<Prepared, AnnotationSnapshot> {
   readonly document: SavedViewDocumentPort;
   readonly viewerState: ViewerStateAdapter<Prepared>;
   readonly annotationViews: AnnotationViewAdapter<AnnotationSnapshot>;
@@ -243,7 +242,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
 
     this.cancelTour('view-removed');
     this.cancelActivation('view-removed');
-    if (references.active) await this.#deactivateActive(viewId);
+    if (references.active) await this.#deactivateActive();
     this.#assertCoordinated();
 
     return this.#commit(`Remove view ${viewId}`, (draft) => {
@@ -477,10 +476,10 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     let annotationApplyStarted = false;
     try {
       prepared = await this.#viewerState.prepare(view.viewerState, context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       hostApplyStarted = true;
       await this.#viewerState.apply(prepared, context);
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
       annotationSnapshot = this.#annotationViews.capture();
       annotationApplyStarted = true;
       await this.#annotationViews.apply(
@@ -488,7 +487,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
         view.annotationOverrides,
         { signal: context.signal },
       );
-      throwIfAborted(context.signal);
+      context.signal.throwIfAborted();
 
       const current = this.#findView(viewId);
       if (
@@ -496,7 +495,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
         fingerprint(current) !== operation.definitionFingerprint
       ) {
         operation.controller.abort('view-changed');
-        throwIfAborted(context.signal);
+        context.signal.throwIfAborted();
       }
 
       const previousRollback = this.#activeRollback;
@@ -535,7 +534,10 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
           );
         }
       }
-      if (operation.controller.signal.aborted || isAbortError(error)) {
+      if (
+        operation.controller.signal.aborted
+        || (error instanceof Error && error.name === 'AbortError')
+      ) {
         if (releaseFailure !== undefined) {
           const cleanupFailure = new SavedViewError(
             'saved_view/activation_failed',
@@ -614,7 +616,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     throw failure;
   }
 
-  async #deactivateActive(removedViewId: string): Promise<void> {
+  async #deactivateActive(): Promise<void> {
     do {
       const active = this.#activeRollback;
       if (active === undefined) {
@@ -668,8 +670,8 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     this.#pending.add(controller);
     try {
       const state = await this.#viewerState.capture({ signal: controller.signal });
-      throwIfAborted(controller.signal);
-      return normalizeViewerState(state);
+      controller.signal.throwIfAborted();
+      return state;
     } catch (error) {
       if (controller.signal.aborted) {
         throw new SavedViewError(
@@ -723,7 +725,6 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
       this.#activeViewId !== undefined
       && this.#findView(this.#activeViewId) === undefined
     ) {
-      const removedActiveViewId = this.#activeViewId;
       this.#playbackOperation?.controller.abort('active-view-removed');
       this.#activationOperation?.controller.abort('active-view-removed');
       this.#playback = idlePlayback;
@@ -731,7 +732,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
       // Never report being on a view the document no longer contains. Putting the model back
       // takes a moment, and the nearest view that does still exist is published once it finishes.
       this.#activeViewId = undefined;
-      this.#activeReconciliation ??= this.#reconcileRemovedActiveViews(removedActiveViewId)
+      this.#activeReconciliation ??= this.#reconcileRemovedActiveViews()
         .catch(() => {
           // A failure while putting things back is reported as a fatal diagnostic rather than
           // thrown. This runs in response to someone else's undo, and throwing here would surface
@@ -746,8 +747,8 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
     this.#publish(false);
   }
 
-  async #reconcileRemovedActiveViews(removedViewId: string): Promise<void> {
-    if (!this.#disposed) await this.#deactivateActive(removedViewId);
+  async #reconcileRemovedActiveViews(): Promise<void> {
+    if (!this.#disposed) await this.#deactivateActive();
   }
 
   #compactActiveRollback(): void {
@@ -906,7 +907,7 @@ export class SavedViewCoordinator<Prepared = unknown, AnnotationSnapshot = unkno
 
 const timeoutScheduler: SavedViewScheduler = {
   delay(milliseconds, signal) {
-    if (signal.aborted) return Promise.reject(abortError(signal));
+    if (signal.aborted) return Promise.reject(signal.reason);
     if (milliseconds === 0) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(done, milliseconds);
@@ -921,7 +922,7 @@ const timeoutScheduler: SavedViewScheduler = {
       }
       function aborted(): void {
         cleanup();
-        reject(abortError(signal));
+        reject(signal.reason);
       }
     });
   },
@@ -937,22 +938,12 @@ function fingerprint(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw abortError(signal);
-}
-
 function abortReason(signal: AbortSignal): string {
   return typeof signal.reason === 'string' ? signal.reason : 'cancelled';
 }
 
-function abortError(signal: AbortSignal): Error {
-  const error = new Error(abortReason(signal));
-  error.name = 'AbortError';
-  return error;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
+function freezeSavedView<Value>(value: Value): Readonly<Value> {
+  return deepFreeze(structuredClone(value));
 }
 
 function linkAbort(

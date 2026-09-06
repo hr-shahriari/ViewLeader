@@ -3,7 +3,7 @@
 // Authoring and editing both work in these coordinates rather than in DOM events, so they can be
 // driven from a script with no browser at all — which is how the test suite exercises them, and
 // what lets a host wire up its own input devices.
-import { InvalidInputError } from './errors.js';
+import { domainError } from './errors.js';
 import type { NormalizedPointerInput } from './host.js';
 
 /** Rejects coordinates outside the viewport. Catches a host passing raw pixels by mistake. */
@@ -12,7 +12,7 @@ export function validatePointer(pointer: NormalizedPointerInput): void {
     !Number.isFinite(pointer.x) || pointer.x < 0 || pointer.x > 1 ||
     !Number.isFinite(pointer.y) || pointer.y < 0 || pointer.y > 1
   ) {
-    throw new InvalidInputError('Normalized pointer coordinates must be between 0 and 1');
+    throw domainError('INVALID_INPUT', 'Normalized pointer coordinates must be between 0 and 1');
   }
 }
 

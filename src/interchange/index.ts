@@ -6,7 +6,6 @@
 export * from './archive.js';
 export * from './apply.js';
 export * from './bcf.js';
-export * from './document-ops.js';
 export * from './sheet.js';
 export * from './types.js';
 export * from './xml.js';

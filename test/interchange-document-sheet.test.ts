@@ -5,78 +5,11 @@ import { DocumentEngine } from '../src/document.js';
 import { ViewLeader, type HostAdapterBundle } from '../src/index.js';
 import {
   exportVectorSheet,
-  mergeIdentifiedDocuments,
   planBcfApply,
   rasterizeVectorSheet,
-  refreshElementFallbacksOnSave,
-  transactionalLoad,
 } from '../src/interchange/index.js';
 
-describe('M9 save hygiene and transactional loads', () => {
-  it('refreshes primary and leg fallback points only in the output copy', () => {
-    const source = {
-      version: 1,
-      annotations: [
-        {
-          id: 'a',
-          anchor: {
-            kind: 'element',
-            elementId: 'primary',
-            fallbackPoint: { x: 0, y: 0, z: 0 },
-          },
-          legs: [
-            {
-              id: 'leg',
-              anchor: {
-                kind: 'element',
-                elementId: 'extra',
-                fallbackPoint: { x: 1, y: 1, z: 1 },
-              },
-            },
-          ],
-        },
-      ],
-    };
-    const before = structuredClone(source);
-    const saved = refreshElementFallbacksOnSave(source, ({ elementId }) =>
-      elementId === 'primary' ? { x: 2, y: 3, z: 4 } : undefined,
-    );
-    expect(source).toEqual(before);
-    expect(saved.annotations[0]?.anchor.fallbackPoint).toEqual({ x: 2, y: 3, z: 4 });
-    expect(saved.annotations[0]?.legs?.[0]?.anchor.fallbackPoint).toEqual({ x: 1, y: 1, z: 1 });
-  });
-
-  it('merges only missing ids and reports every duplicate', () => {
-    const current = { annotations: [{ id: 'a', value: 1 }] };
-    const incoming = { annotations: [{ id: 'a', value: 2 }, { id: 'b', value: 3 }, { id: 'b', value: 4 }] };
-    const result = mergeIdentifiedDocuments(current, incoming);
-    expect(result.document.annotations).toEqual([{ id: 'a', value: 1 }, { id: 'b', value: 3 }]);
-    expect(result.report).toEqual({ mode: 'merge', created: 1, skippedIds: ['a', 'b'] });
-  });
-
-  it('rolls replace back byte-equivalently when population fails after reset', () => {
-    let state = { annotations: [{ id: 'known' }], marker: 'good' };
-    let failOnce = true;
-    const target = {
-      read: () => structuredClone(state),
-      reset: () => { state = { annotations: [], marker: '' }; },
-      populate: (document: typeof state) => {
-        if (document.marker === 'bad' && failOnce) {
-          failOnce = false;
-          throw new Error('population failed');
-        }
-        state = structuredClone(document);
-      },
-    };
-    expect(() => transactionalLoad(
-      target,
-      { annotations: [{ id: 'incoming' }], marker: 'bad' },
-      'replace',
-      () => ({ valid: true, errors: [] }),
-    )).toThrow('population failed');
-    expect(state).toEqual({ annotations: [{ id: 'known' }], marker: 'good' });
-  });
-
+describe('M9 BCF apply planning', () => {
   it('plans embedded or lossy foreign topics idempotently without manager mutation', () => {
     const embedded = { version: 1, annotations: [] };
     const topics = [

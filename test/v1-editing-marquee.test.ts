@@ -206,7 +206,7 @@ describe('editing: marquee select', () => {
     expect(leader.editing.getSnapshot().phase).toBe('marquee');
     expect(root.querySelector('[data-viewleader-marquee]')).not.toBeNull();
 
-    leader.editing.cancel('escape');
+    leader.editing.cancel();
     leader.update();
 
     expect(leader.annotations.getSnapshot().selectedIds).toEqual(['a2']);

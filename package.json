@@ -1,6 +1,6 @@
 {
   "name": "viewleader",
-  "version": "0.0.1-beta.0",
+  "version": "0.0.1-beta.1",
   "description": "Engine-neutral SVG annotation and leader-line overlay for 3D model viewers",
   "keywords": [
     "annotation",
@@ -66,9 +66,15 @@
     "vue": ">=3.3.0"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "three": { "optional": true },
-    "vue": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "three": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
   },
   "workspaces": [
     "demo"
@@ -83,7 +89,6 @@
     "test:e2e:headed": "playwright test --headed",
     "typecheck": "tsc --noEmit && tsc -p demo --noEmit",
     "perf:browser": "npm run build && npm run build:demo && node scripts/run-browser-performance.mjs",
-    "perf:gate": "node scripts/performance-gate.mjs",
     "check": "npm run typecheck && npm run build && npm test && npm run build:demo && npm run test:e2e",
     "prepublishOnly": "npm run build"
   },

@@ -62,7 +62,7 @@ export function stableBcfGuid(value: string): string {
  * The check that pins it down: straight up, `(0, 1, 0)`, must leave here as `(0, 0, 1)`, because
  * that is what up means in the file format.
  */
-export function exportAxis(point: Vec3, remap = false): Vec3 {
+function exportAxis(point: Vec3, remap = false): Vec3 {
   return remap ? { x: point.x, y: cleanZero(-point.z), z: point.y } : { ...point };
 }
 
@@ -70,7 +70,7 @@ export function exportAxis(point: Vec3, remap = false): Vec3 {
  * The reverse: from the file's convention back to this library's. The check is the mirror of the one
  * above — the file's up, `(0, 0, 1)`, must arrive as `(0, 1, 0)`.
  */
-export function importAxis(point: Vec3, remap = false): Vec3 {
+function importAxis(point: Vec3, remap = false): Vec3 {
   return remap ? { x: point.x, y: point.z, z: cleanZero(-point.y) } : { ...point };
 }
 
@@ -177,7 +177,7 @@ export function exportBcf(
   document: BcfExportDocument,
   options: BcfExportOptions,
 ): Uint8Array {
-  const now = (options.now?.() ?? new Date()).toISOString();
+  const now = new Date().toISOString();
   const entries: ArchiveEntry[] = [
     { name: 'bcf.version', data: encoder.encode('<?xml version="1.0" encoding="UTF-8"?><Version VersionId="2.1"/>') },
   ];
@@ -290,7 +290,7 @@ export async function parseBcf(
   archive: Uint8Array,
   options: BcfParseOptions = {},
 ): Promise<ParsedBcf> {
-  const read = await readArchive(archive, options.archiveLimits, options.inflateRaw);
+  const read = await readArchive(archive);
   if (!read.valid) return { topics: [], warnings: read.errors };
   const byName = new Map(read.entries.map((entry) => [entry.name, entry.data]));
   const versionEntry = byName.get('bcf.version');

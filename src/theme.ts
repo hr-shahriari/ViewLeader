@@ -39,12 +39,6 @@ export function lineweight(points: number): number {
  */
 export const CAP_RATIO = 0.72;
 
-/** Minimum spacing between lines of text, per ISO 3098, as a multiple of the font size. */
-export const LINE_SPACING_RATIO = (25 / 14) * CAP_RATIO;
-
-/** Roughly how far letters rise above the baseline, as a fraction of the font size. */
-export const ASCENT_RATIO = 0.8;
-
 /**
  * The standard text sizes on a drawing, named by capital-letter height. `iso-2.5` is 2.5 mm; the
  * imperial names are inches, and `imperial-3/32` is the smallest US standards allow for a note.

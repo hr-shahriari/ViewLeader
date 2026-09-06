@@ -18,15 +18,17 @@
 
 type FrameListener = () => void;
 
-/** Emitter → its listeners. Keyed on the runtime, which is what actually produces frames. */
-const listenersByEmitter = new WeakMap<object, Set<FrameListener>>();
-
-/** Public-facing owner → the emitter it was built with, so a caller holding a `ViewLeader` can subscribe. */
-const emitterByOwner = new WeakMap<object, object>();
+/**
+ * One listener set per instance, registered under both the public-facing owner (the `ViewLeader`
+ * a caller holds) and the emitter (its runtime, which actually produces frames).
+ */
+const seams = new WeakMap<object, Set<FrameListener>>();
 
 /** Called once while a `ViewLeader` is being constructed, so its runtime can be found again later. */
 export function linkFrameSeam(owner: object, emitter: object): void {
-  emitterByOwner.set(owner, emitter);
+  const listeners = new Set<FrameListener>();
+  seams.set(owner, listeners);
+  seams.set(emitter, listeners);
 }
 
 /**
@@ -36,37 +38,31 @@ export function linkFrameSeam(owner: object, emitter: object): void {
  * moved and re-reading geometry would return what the caller already wrote.
  */
 export function subscribeFrame(owner: object, listener: FrameListener): () => void {
-  const emitter = emitterByOwner.get(owner);
+  const listeners = seams.get(owner);
   // A disposed or unlinked owner has no frames coming; an inert unsubscribe keeps callers from
   // having to special-case it.
-  if (emitter === undefined) return () => undefined;
-  const listeners = listenersByEmitter.get(emitter) ?? new Set<FrameListener>();
-  listenersByEmitter.set(emitter, listeners);
+  if (listeners === undefined) return () => undefined;
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
 /** Called by the runtime at the end of a frame it drew. */
 export function emitFrame(emitter: object): void {
-  const listeners = listenersByEmitter.get(emitter);
+  const listeners = seams.get(emitter);
   if (listeners === undefined) return;
   for (const listener of [...listeners]) {
     try { listener(); } catch { /* one writer's failure must not stop the frame or its siblings */ }
   }
 }
 
-/** Drops every listener for an emitter, so disposing a `ViewLeader` cannot leave writers attached. */
-export function clearFrameSeam(emitter: object): void {
-  listenersByEmitter.delete(emitter);
-}
-
 /**
- * Forgets an owner, so a subscribe after disposal is honestly inert.
+ * Drops every listener and forgets the key, from either side.
  *
- * Without this the owner still resolves to its dead emitter, and `subscribeFrame` hands back a
- * real-looking unsubscribe for a listener no frame will ever reach — a silent no-op that reads like
- * a working subscription.
+ * Forgetting the key is what makes a subscribe after disposal honestly inert: otherwise the owner
+ * still resolves to a set no frame will ever reach, and `subscribeFrame` hands back a real-looking
+ * unsubscribe for a listener nothing will call.
  */
-export function unlinkFrameSeam(owner: object): void {
-  emitterByOwner.delete(owner);
+export function clearFrameSeam(key: object): void {
+  seams.get(key)?.clear();
+  seams.delete(key);
 }

@@ -1,23 +1,14 @@
 // @vitest-environment jsdom
 import { createApp, h, nextTick, ref } from 'vue';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ViewLeaderOptions } from 'viewleader';
-import { runFrameworkConformance } from './framework-conformance-harness.js';
 import {
   runMountedFrameworkConformance,
   type MountedPublicBinding,
 } from './framework-mounted-conformance-harness.js';
-import {
-  BoundaryLifecycle,
-  CapabilitySubscription,
-  resolveVueSource,
-} from '../src/vue/core.js';
+import { CapabilitySubscription } from '../src/internal/lifecycle.js';
+import { resolveVueSource } from '../src/vue/core.js';
 import { useViewLeader, type VueViewLeaderBinding } from '../src/vue/index.js';
-
-runFrameworkConformance('Vue', {
-  createLifecycle: (factory) => new BoundaryLifecycle(factory),
-  createSubscription: () => new CapabilitySubscription(),
-});
 
 runMountedFrameworkConformance('Vue', async (options) => {
   const container = document.createElement('div');
@@ -53,5 +44,34 @@ describe('Vue source resolution', () => {
     expect(resolveVueSource(value)).toBe(value);
     expect(resolveVueSource(() => value)).toBe(value);
     expect(resolveVueSource({ __v_isRef: true, value })).toBe(value);
+  });
+});
+
+describe('CapabilitySubscription', () => {
+  it('swaps the listener without resubscribing, and unsubscribes once on dispose', () => {
+    const listeners = new Set<() => void>();
+    let value = 0;
+    const capability = {
+      getSnapshot: () => value,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+    };
+    const subscription = new CapabilitySubscription<number>();
+    const first = vi.fn();
+    const latest = vi.fn();
+    subscription.update(capability, first);
+    subscription.update(capability, latest);
+    expect(listeners.size).toBe(1);
+
+    value = 1;
+    for (const listener of [...listeners]) listener();
+    // The stale callback saw only its own initial publish; the newest one gets the change.
+    expect(first).toHaveBeenCalledOnce();
+    expect(latest).toHaveBeenLastCalledWith(1);
+
+    subscription.dispose();
+    expect(listeners.size).toBe(0);
   });
 });

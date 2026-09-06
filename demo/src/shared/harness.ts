@@ -1,3 +1,4 @@
+import type { NeutralViewerState, ViewerStateAdapter } from 'viewleader';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -14,13 +15,16 @@ export interface ExampleHarness {
 
 declare global {
   interface Window {
-    // The harness intentionally knows nothing about ViewLeader. Pages publish their instance through
+    // The harness has no runtime dependency on ViewLeader. Pages publish their instance through
     // this stable slot so browser/e2e checks have one handle regardless of which example is running.
     vl?: unknown;
   }
 }
 
-/** Neutral Three.js lifecycle shared by every example. No ViewLeader imports or API calls live here. */
+/**
+ * Neutral Three.js lifecycle shared by every example. The only `viewleader` imports in this file are
+ * types — nothing here calls its API.
+ */
 export function createExampleHarness(viewport: HTMLElement): ExampleHarness {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#e9e7df');
@@ -118,6 +122,48 @@ export function createExampleHarness(viewport: HTMLElement): ExampleHarness {
       renderer.domElement.remove();
       boundary.remove();
     },
+  };
+}
+
+/**
+ * The `viewerState` adapter over the harness camera and orbit controls, for the pages that save
+ * views. `direction` stores the full vector from camera to orbit target, so `apply` restores the
+ * distance exactly. Activation is transactional: `prepare` captures the prior state so a failed
+ * apply rolls back to it.
+ */
+export function createViewerStateAdapter(
+  { camera, controls }: ExampleHarness,
+): ViewerStateAdapter<{ prior: NeutralViewerState; next: NeutralViewerState }> {
+  const capture = (): NeutralViewerState => ({
+    camera: {
+      projection: 'perspective',
+      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+      direction: { x: controls.target.x - camera.position.x, y: controls.target.y - camera.position.y, z: controls.target.z - camera.position.z },
+      up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
+      verticalFieldOfView: camera.fov,
+      near: camera.near,
+      far: camera.far,
+    },
+    modelVisibility: [],
+    elementVisibility: [],
+    selection: [],
+    colorOverrides: [],
+    clippingPlanes: [],
+  });
+  const apply = (state: NeutralViewerState): void => {
+    const c = state.camera;
+    camera.position.set(c.position.x, c.position.y, c.position.z);
+    controls.target.set(c.position.x + c.direction.x, c.position.y + c.direction.y, c.position.z + c.direction.z);
+    camera.up.set(c.up.x, c.up.y, c.up.z);
+    if (c.projection === 'perspective') camera.fov = c.verticalFieldOfView;
+    camera.updateProjectionMatrix();
+    controls.update();
+  };
+  return {
+    capture,
+    prepare: (next) => ({ prior: capture(), next }),
+    apply: ({ next }) => apply(next),
+    rollback: ({ prior }) => apply(prior),
   };
 }
 

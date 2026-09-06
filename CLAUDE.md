@@ -35,8 +35,11 @@ npx playwright test e2e/examples.spec.ts --project=chromium -g 'Markup'
 declaration graph to prove the bare entry never pulls in Three or IFC types. Run `npm run build`
 first, or that test fails on a clean checkout. This is why `check` orders build before test.
 
-Performance is a separate, opt-in gate — `npm run perf:browser` runs pinned-Chromium scenarios and
-writes JSON; `npm run perf:gate -- --results=<path>` validates it. Neither runs in `check`.
+Performance is a separate, opt-in gate — `npm run perf:browser` builds the library and the demo,
+runs the scenarios in `scripts/run-browser-performance.mjs` in Playwright's Chromium against the
+demo's `vite preview`, writes the JSON report (`--output=<path>`, default
+`artifacts/performance-results.json`) and exits non-zero when any scenario's median-run p95 is over
+its budget. `--scenario=<id>` runs one. It does not run in `check`.
 
 ## Architecture
 
@@ -58,8 +61,8 @@ and is the *only* place allowed to name Three; the boundary test enforces that.
 - [src/runtime.ts](src/runtime.ts) — `ViewLeaderRuntime`, the frame loop and the owner of transient
   state (selection, hover, previews, layout frame, placement/routing mode, annotation scale).
 - [src/document.ts](src/document.ts) — `DocumentEngine`: the persisted document, validation against
-  `DocumentLimits`, transactions and undo/redo. `edit()` opens an implicit transaction; nested
-  `edit()` calls collapse into the enclosing one so a compound operation is one undo step.
+  the shipped document limits, transactions and undo/redo. `edit()` opens an implicit transaction;
+  nested `edit()` calls collapse into the enclosing one so a compound operation is one undo step.
 
 ### The frame pipeline
 
@@ -84,8 +87,7 @@ document-wide `candidateCount` and the placement hysteresis), and **live preview
 state** (an in-progress drag overrides both the annotation's own placement and any view override,
 and only becomes stored on release).
 
-Drive it either way: `selfDrive: true` (or `start()`) runs a rAF loop; otherwise the host calls
-`update()` from its own render loop.
+The host drives it: call `update()` from its own render loop. There is no self-driven rAF loop.
 
 ### Other subsystems worth knowing
 
@@ -101,9 +103,10 @@ Drive it either way: `selfDrive: true` (or `start()`) runs a rAF loop; otherwise
 - [src/saved-views/](src/saved-views/) — engine-neutral camera/visibility state, saved views and
   linear tours. `neutral-types.ts` is a hard boundary: no engine, control or loader type crosses it.
 - [src/interchange/](src/interchange/) — BCF 2.1 read/write plus the archive and XML plumbing.
-- [src/react/](src/react/), [src/vue/](src/vue/) — thin bindings over
-  [src/internal/lifecycle.ts](src/internal/lifecycle.ts), which keys instance identity on the
-  boundary *element* so a re-render cannot leak a second overlay.
+- [src/react/](src/react/), [src/vue/](src/vue/) — thin bindings. Each builds one `ViewLeader` per
+  mounted boundary *element* and disposes it when the element goes, so a re-render cannot leak a
+  second overlay. The framework-agnostic controllers both entries hand to a host are re-exported
+  once from [src/internal/host-toolkit.ts](src/internal/host-toolkit.ts).
 
 ## Conventions
 

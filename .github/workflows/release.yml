@@ -19,13 +19,14 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest   # trusted publishing needs npm >= 11.5.1
       - run: npm ci
-      - run: npm run typecheck
+      # build first: demo typecheck and the package-boundary test both read dist/
       - run: npm run build
+      - run: npm run typecheck
       - run: npm test
       - name: Check tag matches package.json version
         run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
       # prerelease versions (0.0.1-beta.0) must not take the `latest` dist-tag
-      - run: npm publish --provenance --tag "$([[ ${GITHUB_REF_NAME} == *-* ]] && echo next || echo latest)"
+      - run: npm publish --provenance --tag "$([[ ${GITHUB_REF_NAME} == *-* ]] && echo beta || echo latest)"
         shell: bash
       - run: gh release create "${GITHUB_REF_NAME}" --generate-notes $([[ ${GITHUB_REF_NAME} == *-* ]] && echo --prerelease)
         shell: bash
